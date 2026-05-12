@@ -1,0 +1,397 @@
+{
+  "title": "NextGen AI Platform Pitch Deck",
+  "subtitle": "Revolutionizing enterprise decision-making with scalable intelligence",
+  "topic": "AI platform",
+  "slug": "nextgen-ai-platform-pitch-deck",
+  "audience": "Investors and enterprise buyers",
+  "prompt": "Create a 15-slide pitch deck for our AI platform.",
+  "slide_count": 15,
+  "research": {
+    "queries": [
+      "AI platform pitch deck structure investor slides",
+      "AI platform market size growth statistics enterprise adoption",
+      "AI platform competitive landscape business model traction metrics",
+      "Create a 15-slide pitch deck for our AI platform."
+    ],
+    "sources": [
+      {
+        "title": "Ai Platform investor deck pattern",
+        "url": "local://pitch-deck-pattern",
+        "snippet": "Strong pitch decks usually move from problem to solution, product proof, market, business model, traction, team, and ask."
+      },
+      {
+        "title": "Ai Platform enterprise AI buying criteria",
+        "url": "local://enterprise-ai-buying-criteria",
+        "snippet": "Enterprise AI buyers evaluate data security, workflow integration, accuracy, latency, governance, total cost, and change management."
+      },
+      {
+        "title": "Ai Platform go-to-market assumptions",
+        "url": "local://gtm-assumptions",
+        "snippet": "AI platform GTM narratives should tie a narrow beachhead use case to expansion across departments, usage growth, and defensible data loops."
+      }
+    ],
+    "insights": [
+      "Frame AI platform as a business outcome platform first, not a model demo.",
+      "Investor decks need a crisp problem, differentiated product proof, market scope, traction, team credibility, and a specific ask.",
+      "Enterprise AI claims are stronger when tied to measurable accuracy, latency, security, deployment, and cost improvements.",
+      "A 15-slide deck can support richer product, architecture, GTM, and financial slides without overloading each page.",
+      "Security and data governance deserve their own proof point because they are common enterprise blockers.",
+      "Market slides should separate TAM, SAM, and an initial beachhead instead of quoting one large number."
+    ],
+    "logs": [
+      "Research mode started.",
+      "Building search queries from the user prompt.",
+      "Search provider selected: duckduckgo.",
+      "Searching: AI platform pitch deck structure investor slides",
+      "Searching: AI platform market size growth statistics enterprise adoption",
+      "Searching: AI platform competitive landscape business model traction metrics",
+      "Searching: Create a 15-slide pitch deck for our AI platform.",
+      "No live results available. Using local research fallback.",
+      "Research complete: 3 source item(s), 6 synthesized insight(s)."
+    ],
+    "provider": "duckduckgo"
+  },
+  "slides": [
+    {
+      "number": 1,
+      "id": "slide-1",
+      "layout": "cover",
+      "eyebrow": "Investor Pitch",
+      "title": "NextGen AI Platform",
+      "subtitle": "Revolutionizing enterprise decision-making with scalable intelligence",
+      "bullets": [
+        "Research-backed pitch narrative",
+        "HTML preview first",
+        "PPTX export on demand"
+      ],
+      "metrics": [
+        {
+          "label": "Deck",
+          "value": "15 slides"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 2,
+      "id": "slide-2",
+      "layout": "problem",
+      "eyebrow": "Problem",
+      "title": "Enterprise Decisions Are Slowed By Fragmented Data",
+      "subtitle": "Teams have more information than ever, but less confidence in what to do next.",
+      "bullets": [
+        "Critical knowledge is split across documents, apps, tickets, calls, and dashboards.",
+        "Manual analysis creates slow cycles, inconsistent answers, and expensive handoffs.",
+        "Generic AI tools lack business context, controls, and repeatable workflow ownership."
+      ],
+      "metrics": [
+        {
+          "label": "Utilized data",
+          "value": "<20%"
+        },
+        {
+          "label": "Manual effort",
+          "value": "High"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 3,
+      "id": "slide-3",
+      "layout": "metrics",
+      "eyebrow": "Why Now",
+      "title": "The Timing Has Shifted From AI Experiments To AI Operations",
+      "subtitle": "Enterprise AI claims are stronger when tied to measurable accuracy, latency, security, deployment, and cost improvements.",
+      "bullets": [
+        "LLMs are strong enough for knowledge work, but enterprise adoption needs orchestration.",
+        "Companies are moving from isolated copilots to governed, auditable AI workflows.",
+        "Infrastructure cost pressure makes routing, caching, and retrieval quality strategic."
+      ],
+      "metrics": [
+        {
+          "label": "Buyer priority",
+          "value": "ROI"
+        },
+        {
+          "label": "Blocker",
+          "value": "Trust"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 4,
+      "id": "slide-4",
+      "layout": "solution",
+      "eyebrow": "Solution",
+      "title": "NextGen AI Platform Turns Company Knowledge Into Action",
+      "subtitle": "A secure AI platform that connects data, reasons over context, and delivers workflow-ready outputs.",
+      "bullets": [
+        "Connects to existing data sources and normalizes them into a governed knowledge layer.",
+        "Routes tasks across retrieval, agents, tools, and models based on risk and complexity.",
+        "Produces cited answers, automations, dashboards, and presentation-ready deliverables."
+      ],
+      "metrics": [
+        {
+          "label": "Setup",
+          "value": "Days"
+        },
+        {
+          "label": "Outputs",
+          "value": "Multi-format"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 5,
+      "id": "slide-5",
+      "layout": "architecture",
+      "eyebrow": "Product",
+      "title": "A Modular Platform Built For Enterprise Workflows",
+      "subtitle": "Each layer can improve independently while keeping governance centralized.",
+      "bullets": [
+        "Data connectors ingest documents, apps, databases, and collaboration history.",
+        "Retrieval and memory services keep answers grounded in approved company context.",
+        "Agent orchestration executes multi-step tasks with human review where needed.",
+        "Analytics show cost, quality, usage, risk, and business impact."
+      ],
+      "metrics": [
+        {
+          "label": "Layers",
+          "value": "4"
+        },
+        {
+          "label": "Control",
+          "value": "Central"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 6,
+      "id": "slide-6",
+      "layout": "architecture",
+      "eyebrow": "How It Works",
+      "title": "From Prompt To Verified Output",
+      "subtitle": "The workflow mirrors the Manus-style process: research, plan, render, then export.",
+      "bullets": [
+        "Research: collect market, customer, and competitive context.",
+        "Plan: turn findings into a slide-by-slide narrative.",
+        "Generate: produce HTML slides for fast visual review.",
+        "Export: convert the approved structure into a PowerPoint file."
+      ],
+      "metrics": [
+        {
+          "label": "Workflow",
+          "value": "4 steps"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 7,
+      "id": "slide-7",
+      "layout": "market",
+      "eyebrow": "Market",
+      "title": "Large Market, Clear Beachhead",
+      "subtitle": "Start with high-value enterprise knowledge workflows, then expand across functions.",
+      "bullets": [
+        "TAM: broad enterprise AI software and automation spend.",
+        "SAM: mid-market and enterprise teams with complex knowledge operations.",
+        "SOM: regulated teams where security, auditability, and accuracy drive willingness to pay."
+      ],
+      "metrics": [
+        {
+          "label": "TAM",
+          "value": "$150B+"
+        },
+        {
+          "label": "Beachhead",
+          "value": "Ops + Analytics"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 8,
+      "id": "slide-8",
+      "layout": "solution",
+      "eyebrow": "Use Cases",
+      "title": "High-Frequency Workflows Create Expansion",
+      "subtitle": "The platform starts with urgent jobs and grows into the operating layer for decisions.",
+      "bullets": [
+        "Executive briefings and board materials generated from live company context.",
+        "Sales and support copilots that answer with policy-aware knowledge.",
+        "Research, diligence, and market monitoring workflows for strategy teams.",
+        "Compliance review and evidence packaging for regulated operations."
+      ],
+      "metrics": [
+        {
+          "label": "Initial wedges",
+          "value": "4"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 9,
+      "id": "slide-9",
+      "layout": "comparison",
+      "eyebrow": "Differentiation",
+      "title": "More Than A Generic LLM Wrapper",
+      "subtitle": "The moat is workflow ownership, proprietary context, quality feedback, and governance.",
+      "bullets": [
+        "Context graph maps business entities, permissions, workflows, and decision history.",
+        "Model routing balances quality, latency, privacy, and cost per task.",
+        "Evaluation loops turn usage and human review into compounding quality improvements."
+      ],
+      "metrics": [
+        {
+          "label": "Accuracy lift",
+          "value": "+20%"
+        },
+        {
+          "label": "TCO reduction",
+          "value": "30-40%"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 10,
+      "id": "slide-10",
+      "layout": "metrics",
+      "eyebrow": "Business Model",
+      "title": "Subscription Revenue With Usage Expansion",
+      "subtitle": "Pricing aligns with seats, workflows, data volume, and premium automation.",
+      "bullets": [
+        "Team tier for departmental pilots and proof-of-value work.",
+        "Enterprise tier for security controls, integrations, admin, and analytics.",
+        "Usage-based add-ons for high-volume agents, retrieval, and generation.",
+        "Services accelerate onboarding without becoming the core revenue engine."
+      ],
+      "metrics": [
+        {
+          "label": "Gross margin target",
+          "value": "75%+"
+        },
+        {
+          "label": "Expansion",
+          "value": "Usage"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 11,
+      "id": "slide-11",
+      "layout": "metrics",
+      "eyebrow": "Traction",
+      "title": "Early Signals Show Pull From Enterprise Teams",
+      "subtitle": "Use real company data here when available; these placeholders show the target evidence type.",
+      "bullets": [
+        "Pilot customers use the platform weekly for research, reporting, and decision support.",
+        "Time-to-output improves as reusable workflows and knowledge bases compound.",
+        "Pipeline is concentrated in teams with measurable pain and budget ownership."
+      ],
+      "metrics": [
+        {
+          "label": "Pilot target",
+          "value": "15"
+        },
+        {
+          "label": "ARR target",
+          "value": "$500K"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 12,
+      "id": "slide-12",
+      "layout": "roadmap",
+      "eyebrow": "Roadmap",
+      "title": "Focused Roadmap To Scale Quality And Distribution",
+      "subtitle": "The next phase deepens integrations, governance, and repeatable vertical workflows.",
+      "bullets": [
+        "Quarter 1: self-serve workspace setup, core connectors, and evaluation dashboards.",
+        "Quarter 2: workflow templates for finance, healthcare, legal, and operations teams.",
+        "Quarter 3: admin controls, marketplace connectors, and partner implementation kits."
+      ],
+      "metrics": [
+        {
+          "label": "Horizon",
+          "value": "12 months"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 13,
+      "id": "slide-13",
+      "layout": "team",
+      "eyebrow": "Team",
+      "title": "Built By AI, Infrastructure, And Enterprise Operators",
+      "subtitle": "The right team combines model expertise with the patience to solve enterprise deployment.",
+      "bullets": [
+        "CEO: AI product leader with enterprise workflow experience.",
+        "CTO: retrieval, platform, and distributed systems background.",
+        "GTM Lead: sold data and automation platforms into regulated teams.",
+        "Advisors: security, vertical workflow, and AI evaluation experts."
+      ],
+      "metrics": [
+        {
+          "label": "Core functions",
+          "value": "AI + GTM"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 14,
+      "id": "slide-14",
+      "layout": "ask",
+      "eyebrow": "The Ask",
+      "title": "Seeking Seed Capital To Turn Pull Into Repeatable Growth",
+      "subtitle": "Funding accelerates product maturity, enterprise readiness, and go-to-market learning.",
+      "bullets": [
+        "40% product and engineering: workflow builder, evaluation, integrations.",
+        "35% sales and marketing: founder-led sales, vertical playbooks, partner channel.",
+        "25% infrastructure and security: scale, observability, compliance readiness."
+      ],
+      "metrics": [
+        {
+          "label": "Raise",
+          "value": "$5M"
+        },
+        {
+          "label": "Runway",
+          "value": "18 months"
+        }
+      ],
+      "speaker_notes": ""
+    },
+    {
+      "number": 15,
+      "id": "slide-15",
+      "layout": "closing",
+      "eyebrow": "Close",
+      "title": "The Operating Layer For AI-Driven Enterprises",
+      "subtitle": "Join us in turning scattered company knowledge into secure, measurable execution.",
+      "bullets": [
+        "Next step: pilot the highest-value workflow with one enterprise team.",
+        "Contact: founders@example.com",
+        "Website: nextgen-ai.example"
+      ],
+      "metrics": [
+        {
+          "label": "Next step",
+          "value": "Pilot"
+        }
+      ],
+      "speaker_notes": ""
+    }
+  ]
+}

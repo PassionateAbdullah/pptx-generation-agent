@@ -1,0 +1,9 @@
+NextGen Health Care Pitch Deck Structure (8 Slides):
+1. Investor Pitch: NextGen Health Care - Turning market insight into an investor-ready growth story.
+2. Problem: Enterprise Decisions Are Slowed By Fragmented Data - Teams have more information than ever, but less confidence in what to do next.
+3. Why Now: The Timing Has Shifted From AI Experiments To AI Operations - Enterprise AI claims are stronger when tied to measurable accuracy, latency, security, deployment, and cost improvements.
+4. Solution: NextGen Health Care Turns Company Knowledge Into Action - A secure AI platform that connects data, reasons over context, and delivers workflow-ready outputs.
+5. Product: A Modular Platform Built For Enterprise Workflows - Each layer can improve independently while keeping governance centralized.
+6. How It Works: From Prompt To Verified Output - The workflow mirrors the Manus-style process: research, plan, render, then export.
+7. Market: Large Market, Clear Beachhead - Start with high-value enterprise knowledge workflows, then expand across functions.
+8. Use Cases: High-Frequency Workflows Create Expansion - The platform starts with urgent jobs and grows into the operating layer for decisions.

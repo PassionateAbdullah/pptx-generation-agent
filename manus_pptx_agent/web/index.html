@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manus-Style PPTX Agent</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="control-pane" aria-label="Generation controls">
+      <div class="brand-row">
+        <div class="brand-mark">M</div>
+        <div>
+          <p>HTML to PPTX Agent</p>
+          <h1>Manus-style pitch deck builder</h1>
+        </div>
+      </div>
+
+      <form id="generateForm" class="prompt-form">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" name="prompt" rows="6">Create a 15-slide pitch deck for our AI platform.</textarea>
+
+        <div class="field-row">
+          <label for="slideCount">Slides</label>
+          <input id="slideCount" name="slideCount" type="number" min="5" max="25" value="15">
+        </div>
+
+        <button id="generateButton" type="submit">Generate Deck</button>
+      </form>
+
+      <section class="activity-panel" aria-label="Activity">
+        <div class="section-heading">
+          <h2>Activity</h2>
+          <span id="statusPill">Idle</span>
+        </div>
+        <ol id="activityLog"></ol>
+      </section>
+
+      <section class="download-panel" aria-label="Downloads">
+        <div class="section-heading">
+          <h2>Output</h2>
+        </div>
+        <div class="button-row">
+          <a id="downloadButton" class="button disabled" href="#" aria-disabled="true">Download PPTX</a>
+          <a id="htmlButton" class="button secondary disabled" href="#" target="_blank" aria-disabled="true">Open HTML</a>
+        </div>
+      </section>
+    </section>
+
+    <section class="workspace" aria-label="Deck workspace">
+      <nav class="tabs" aria-label="Views">
+        <button class="tab active" data-tab="preview" type="button">Preview</button>
+        <button class="tab" data-tab="outline" type="button">Outline</button>
+        <button class="tab" data-tab="notes" type="button">Slide Notes</button>
+        <button class="tab" data-tab="sources" type="button">Sources</button>
+      </nav>
+
+      <section id="preview" class="tab-panel active">
+        <div class="empty-state">
+          <h2>Ready to generate</h2>
+          <p>The agent will research, plan the deck, render HTML slides, then prepare PPTX export on download.</p>
+        </div>
+      </section>
+
+      <section id="outline" class="tab-panel">
+        <pre id="outlineText"></pre>
+      </section>
+
+      <section id="notes" class="tab-panel">
+        <pre id="notesText"></pre>
+      </section>
+
+      <section id="sources" class="tab-panel">
+        <div id="sourcesList" class="sources-list"></div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
+
