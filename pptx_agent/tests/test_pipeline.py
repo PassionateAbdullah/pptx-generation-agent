@@ -3,10 +3,10 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from manus_pptx_agent.config import Settings
-from manus_pptx_agent.planner import build_deck, deck_structure_text, extract_slide_count
-from manus_pptx_agent.pptx_writer import PptxWriter
-from manus_pptx_agent.research import Researcher
+from pptx_agent.config import Settings
+from pptx_agent.planner import build_deck, deck_structure_text, extract_slide_count
+from pptx_agent.pptx_writer import PptxWriter
+from pptx_agent.research import Researcher
 
 
 class PipelineTest(unittest.TestCase):

@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from manus_pptx_agent.config import load_settings
-from manus_pptx_agent.server import run_server
+from pptx_agent.config import load_settings
+from pptx_agent.server import run_server
 
 
 def main() -> None:
@@ -12,4 +12,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

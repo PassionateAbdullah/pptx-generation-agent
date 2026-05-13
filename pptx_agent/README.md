@@ -14,7 +14,7 @@ The app intentionally uses only the Python standard library, so it works in the 
 ## Run
 
 ```bash
-cd /home/mamun/projects/pptx-generation-agent/manus_pptx_agent
+cd /home/mamun/projects/pptx-generation-agent/pptx_agent
 python3 run.py
 ```
 
@@ -46,7 +46,7 @@ If your SearXNG runs on another port, change `SEARXNG_URL`. It can be a single U
 Generated runs are written to:
 
 ```text
-manus_pptx_agent/output/<job-id>/
+pptx_agent/output/<job-id>/
 ```
 
 Each run includes:
