@@ -1,0 +1,12 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: pptx-agent-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8890:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - BASE_URL=http://127.0.0.1:8890/
+      - INSTANCE_NAME=pptx-agent-local-search
