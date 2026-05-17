@@ -9,17 +9,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .config import Settings
-from .html_renderer import render_full_html, render_preview_fragment
-from .planner import (
-    build_deck,
-    deck_structure_text,
-    extract_slide_count,
-    extract_topic,
-    slide_content_markdown,
-)
+from .pipeline import iter_pipeline_with_persist, run_pipeline_and_persist
 from .pptx_writer import PptxWriter
-from .research import Researcher
-from .utils import read_json, timestamp_id, write_json
+from .utils import read_json
 
 
 def run_server(settings: Settings) -> None:
@@ -36,6 +28,31 @@ def run_server(settings: Settings) -> None:
         server.server_close()
 
 
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".map": "application/json; charset=utf-8",
+}
+
+
+def _guess_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in _CONTENT_TYPES:
+        return _CONTENT_TYPES[suffix]
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
 def _make_handler(settings: Settings):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ManusPptxAgent/0.1"
@@ -43,15 +60,16 @@ def _make_handler(settings: Settings):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
-            if path == "/":
-                self._serve_file(settings.root / "web" / "index.html", "text/html; charset=utf-8")
-                return
-            if path in {"/app.js", "/styles.css"}:
-                content_type = "text/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8"
-                self._serve_file(settings.root / "web" / path.lstrip("/"), content_type)
+            if path.startswith("/api/jobs/") and path.endswith("/events.stream"):
+                self._replay_events_sse(path)
                 return
             if path.startswith("/api/jobs/"):
                 self._serve_job_asset(path)
+                return
+            if path.startswith("/api/"):
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            if self._serve_static(path):
                 return
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -59,6 +77,9 @@ def _make_handler(settings: Settings):
             parsed = urlparse(self.path)
             if parsed.path == "/api/generate":
                 self._generate()
+                return
+            if parsed.path == "/api/generate/stream":
+                self._generate_stream()
                 return
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -74,54 +95,114 @@ def _make_handler(settings: Settings):
                     return
                 requested_count = payload.get("slide_count")
                 explicit_count = int(requested_count) if requested_count else None
-                slide_count = extract_slide_count(prompt, explicit_count)
-                topic = extract_topic(prompt)
-
-                research = Researcher(settings).run(prompt, topic)
-                deck, planner_logs = build_deck(prompt, slide_count, research, settings)
-                logs = research["logs"] + planner_logs + ["Rendering HTML preview."]
-
-                job_id = timestamp_id(deck["title"])
-                job_dir = settings.output_dir / job_id
-                job_dir.mkdir(parents=True, exist_ok=True)
-
-                structure = deck_structure_text(deck)
-                markdown = slide_content_markdown(deck)
-                html = render_full_html(deck)
-
-                write_json(job_dir / "deck.json", deck)
-                (job_dir / "pitch_deck_structure.txt").write_text(structure, encoding="utf-8")
-                (job_dir / "slide_content.md").write_text(markdown, encoding="utf-8")
-                (job_dir / "slides.html").write_text(html, encoding="utf-8")
-
-                logs.append("Saved structure, slide notes, and HTML preview.")
-                logs.append("PPTX will be generated when Download PPTX is clicked.")
-
-                self._send_json(
-                    {
-                        "job_id": job_id,
-                        "title": deck["title"],
-                        "slide_count": deck["slide_count"],
-                        "slides": [
-                            {
-                                "number": slide["number"],
-                                "title": slide["title"],
-                                "subtitle": slide["subtitle"],
-                            }
-                            for slide in deck["slides"]
-                        ],
-                        "sources": research.get("sources", []),
-                        "logs": logs,
-                        "structure": structure,
-                        "slide_content": markdown,
-                        "preview_html": render_preview_fragment(deck),
-                        "download_url": f"/api/jobs/{job_id}/deck.pptx",
-                        "html_url": f"/api/jobs/{job_id}/slides.html",
-                    }
-                )
+                response = run_pipeline_and_persist(prompt, explicit_count, settings)
+                self._send_json(response)
             except Exception as exc:  # noqa: BLE001
                 traceback.print_exc()
                 self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def _generate_stream(self) -> None:
+            try:
+                payload = self._read_json()
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"Bad JSON: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            prompt = str(payload.get("prompt") or "").strip()
+            if not prompt:
+                self._send_json({"error": "Prompt is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            requested_count = payload.get("slide_count")
+            try:
+                explicit_count = int(requested_count) if requested_count else None
+            except (TypeError, ValueError):
+                explicit_count = None
+
+            self._begin_sse()
+            try:
+                for event in iter_pipeline_with_persist(prompt, explicit_count, settings):
+                    if not self._write_sse(event):
+                        return
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self._write_sse({"type": "error", "message": str(exc)})
+
+        def _replay_events_sse(self, path: str) -> None:
+            parts = path.strip("/").split("/")
+            if len(parts) != 4 or parts[:2] != ["api", "jobs"] or parts[3] != "events.stream":
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
+            job_dir = (settings.output_dir / job_id).resolve()
+            try:
+                job_dir.relative_to(settings.output_dir.resolve())
+            except ValueError:
+                self._send_json({"error": "Invalid job."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            events_path = job_dir / "events.jsonl"
+            if not events_path.exists():
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            self._begin_sse()
+            with events_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not self._write_sse(event):
+                        return
+
+        def _begin_sse(self) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.close_connection = True
+
+        def _write_sse(self, event: dict) -> bool:
+            ev_type = str(event.get("type") or "message")
+            try:
+                data = json.dumps(event, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                data = json.dumps({"type": "error", "message": "unserializable event"})
+            chunk = f"event: {ev_type}\ndata: {data}\n\n".encode("utf-8")
+            try:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return False
+
+        def _serve_static(self, path: str) -> bool:
+            """Serve frontend assets. Prefer web/dist/ (Vite build); fall back to web/ (legacy)."""
+            web_dist = settings.root / "web" / "dist"
+            web_legacy = settings.root / "web"
+            rel = path.lstrip("/") or "index.html"
+
+            for base in (web_dist, web_legacy):
+                if not base.exists():
+                    continue
+                candidate = (base / rel).resolve()
+                try:
+                    candidate.relative_to(base.resolve())
+                except ValueError:
+                    return False
+                if candidate.is_file():
+                    self._serve_file(candidate, _guess_content_type(candidate))
+                    return True
+                # SPA fallback: unknown path under built bundle → index.html
+                if base == web_dist and rel != "index.html":
+                    index_file = base / "index.html"
+                    if index_file.is_file():
+                        self._serve_file(index_file, "text/html; charset=utf-8")
+                        return True
+            return False
 
         def _serve_job_asset(self, path: str) -> None:
             parts = path.strip("/").split("/")
@@ -155,7 +236,9 @@ def _make_handler(settings: Settings):
                 "slides.html": "text/html; charset=utf-8",
                 "pitch_deck_structure.txt": "text/plain; charset=utf-8",
                 "slide_content.md": "text/markdown; charset=utf-8",
+                "sources.md": "text/markdown; charset=utf-8",
                 "deck.json": "application/json; charset=utf-8",
+                "events.jsonl": "application/x-ndjson; charset=utf-8",
             }
             if asset not in allowed:
                 self._send_json({"error": "Asset not found."}, status=HTTPStatus.NOT_FOUND)
