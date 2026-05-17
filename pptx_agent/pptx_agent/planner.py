@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Iterator
 
+from .citations import cite_slide
 from .config import Settings
+from .events import PHASE_CONTENT, PHASE_OUTLINE, make_event
 from .llm import LLMClient
 from .utils import clamp, slugify
 
@@ -41,22 +43,87 @@ def extract_topic(prompt: str) -> str:
 
 def build_deck(prompt: str, slide_count: int, research: dict[str, Any], settings: Settings) -> tuple[dict[str, Any], list[str]]:
     logs: list[str] = []
+    deck: dict[str, Any] | None = None
+    for event in iter_build_deck(prompt, slide_count, research, settings):
+        etype = event.get("type")
+        if etype == "log":
+            logs.append(event.get("text", ""))
+        elif etype == "phase_end" and event.get("id") == PHASE_CONTENT:
+            deck = event.get("result")
+    if deck is None:
+        topic = extract_topic(prompt)
+        deck = normalize_deck(_fallback_deck(prompt, topic, slide_count, research), prompt, topic, slide_count, research)
+    return deck, logs
+
+
+def iter_build_deck(
+    prompt: str,
+    slide_count: int,
+    research: dict[str, Any],
+    settings: Settings,
+) -> Iterator[dict[str, Any]]:
+    yield make_event("phase_start", id=PHASE_OUTLINE, label="Plan outline")
     topic = extract_topic(prompt)
     llm = LLMClient(settings)
-    if llm.enabled:
-        logs.append(f"LLM planner enabled with model: {settings.llm_model}.")
-        try:
-            deck = _build_with_llm(llm, prompt, topic, slide_count, research)
-            normalized = normalize_deck(deck, prompt, topic, slide_count, research)
-            logs.append("LLM returned a valid slide plan.")
-            return normalized, logs
-        except Exception as exc:  # noqa: BLE001
-            logs.append(f"LLM planning failed; using deterministic planner. Reason: {exc}")
-    else:
-        logs.append("LLM planner not configured. Using deterministic planner.")
+    deck: dict[str, Any] | None = None
 
-    deck = _fallback_deck(prompt, topic, slide_count, research)
-    return normalize_deck(deck, prompt, topic, slide_count, research), logs
+    if llm.enabled:
+        yield make_event("log", phase=PHASE_OUTLINE, text=f"LLM planner enabled with model: {settings.llm_model}.")
+        try:
+            raw = _build_with_llm(llm, prompt, topic, slide_count, research)
+            deck = normalize_deck(raw, prompt, topic, slide_count, research)
+            yield make_event("log", phase=PHASE_OUTLINE, text="LLM returned a valid slide plan.")
+        except Exception as exc:  # noqa: BLE001
+            yield make_event(
+                "log",
+                phase=PHASE_OUTLINE,
+                text=f"LLM planning failed; using deterministic planner. Reason: {exc}",
+            )
+    else:
+        yield make_event("log", phase=PHASE_OUTLINE, text="LLM planner not configured. Using deterministic planner.")
+
+    if deck is None:
+        deck = normalize_deck(_fallback_deck(prompt, topic, slide_count, research), prompt, topic, slide_count, research)
+
+    sources = research.get("sources") or []
+    for slide in deck["slides"]:
+        existing = slide.get("citations")
+        if isinstance(existing, list) and existing:
+            slide["citations"] = [str(item) for item in existing if item]
+        else:
+            slide["citations"] = cite_slide(slide, sources)
+
+    yield make_event(
+        "deck_meta",
+        phase=PHASE_OUTLINE,
+        title=deck["title"],
+        subtitle=deck.get("subtitle", ""),
+        slide_count=deck["slide_count"],
+        topic=deck.get("topic", topic),
+    )
+    for slide in deck["slides"]:
+        yield make_event(
+            "slide_outline",
+            phase=PHASE_OUTLINE,
+            number=slide["number"],
+            title=slide["title"],
+            subtitle=slide.get("subtitle", ""),
+            eyebrow=slide.get("eyebrow", ""),
+            layout=slide.get("layout", "solution"),
+        )
+    yield make_event("phase_end", id=PHASE_OUTLINE)
+
+    yield make_event("phase_start", id=PHASE_CONTENT, label="Write slide content")
+    for slide in deck["slides"]:
+        yield make_event("slide_detail", phase=PHASE_CONTENT, number=slide["number"], slide=slide)
+        if slide.get("citations"):
+            yield make_event(
+                "slide_citation",
+                phase=PHASE_CONTENT,
+                number=slide["number"],
+                source_ids=list(slide["citations"]),
+            )
+    yield make_event("phase_end", id=PHASE_CONTENT, result=deck)
 
 
 def _build_with_llm(
@@ -92,6 +159,7 @@ def _build_with_llm(
                         "bullets": ["3 to 5 concise bullets"],
                         "metrics": [{"label": "string", "value": "string"}],
                         "speaker_notes": "string",
+                        "citations": ["S1", "S2"],
                     }
                 ],
             },
@@ -100,6 +168,7 @@ def _build_with_llm(
                 "No markdown fences.",
                 "Use concrete but clearly assumptive metrics if the prompt lacks company data.",
                 "Use source-aware language without fake citations.",
+                "For each slide, include a citations array listing source_id values (e.g. \"S1\", \"S3\") whose snippet/excerpt actually supports the slide's claims. Empty array if no source applies.",
             ],
         },
         ensure_ascii=False,
@@ -113,196 +182,209 @@ def _build_with_llm(
 def _fallback_deck(prompt: str, topic: str, slide_count: int, research: dict[str, Any]) -> dict[str, Any]:
     title = _title_for_topic(topic)
     subtitle = _subtitle_for_topic(topic)
-    insights = research.get("insights", [])
-    market_hint = "Enterprise AI adoption is accelerating, but buyers need security, measurable ROI, and workflow fit."
-    if insights:
-        market_hint = insights[min(2, len(insights) - 1)]
+    points = _research_points(research)
+    primary_point = _point(
+        points,
+        0,
+        f"Use the user prompt and live research to explain {topic} with concrete evidence.",
+    )
+    problem_point = _point(
+        points,
+        1,
+        "The strongest narrative separates current-state context, stakeholder pain, and the opportunity to improve outcomes.",
+    )
+    timing_point = _point(
+        points,
+        2,
+        "Policy shifts, buyer expectations, technology readiness, and service gaps should be connected to a clear why-now argument.",
+    )
 
     templates = [
         {
             "layout": "cover",
-            "eyebrow": "Investor Pitch",
+            "eyebrow": "Research Deck",
             "title": title,
             "subtitle": subtitle,
-            "bullets": ["Research-backed pitch narrative", "HTML preview first", "PPTX export on demand"],
+            "bullets": [
+                primary_point,
+                "Built from live SearXNG research and source snippets.",
+                "Organized for an investor or decision-maker discussion.",
+            ],
             "metrics": [{"label": "Deck", "value": f"{slide_count} slides"}],
+        },
+        {
+            "layout": "market",
+            "eyebrow": "Landscape",
+            "title": f"Current State Of {title}",
+            "subtitle": primary_point,
+            "bullets": [
+                _point(points, 1, "Identify the main delivery channels, buyers, users, and service constraints."),
+                _point(points, 2, "Separate national context from the first beachhead or target segment."),
+                "Use source-backed facts before making market or product claims.",
+            ],
+            "metrics": [{"label": "Focus", "value": "Current state"}, {"label": "Evidence", "value": "Live sources"}],
         },
         {
             "layout": "problem",
             "eyebrow": "Problem",
-            "title": "Enterprise Decisions Are Slowed By Fragmented Data",
-            "subtitle": "Teams have more information than ever, but less confidence in what to do next.",
+            "title": "The Gap Is Specific, Not Generic",
+            "subtitle": problem_point,
             "bullets": [
-                "Critical knowledge is split across documents, apps, tickets, calls, and dashboards.",
-                "Manual analysis creates slow cycles, inconsistent answers, and expensive handoffs.",
-                "Generic AI tools lack business context, controls, and repeatable workflow ownership.",
+                _point(points, 3, "Call out the highest-friction problem for users or institutions."),
+                "Show who feels the pain, how often it happens, and what it costs.",
+                "Avoid broad sector descriptions unless they connect to an urgent decision.",
             ],
-            "metrics": [{"label": "Utilized data", "value": "<20%"}, {"label": "Manual effort", "value": "High"}],
+            "metrics": [{"label": "Pain", "value": "Defined"}, {"label": "Impact", "value": "Measurable"}],
+        },
+        {
+            "layout": "solution",
+            "eyebrow": "Stakeholders",
+            "title": "The Stakeholder Map Shapes The Opportunity",
+            "subtitle": "A strong deck names the people, institutions, and budgets involved in the decision.",
+            "bullets": [
+                "Clarify the primary user, economic buyer, implementation owner, and regulator.",
+                _point(points, 4, "Use research to distinguish public, private, and partnership roles."),
+                "Translate stakeholder incentives into adoption requirements.",
+            ],
+            "metrics": [{"label": "Users", "value": "Named"}, {"label": "Buyer", "value": "Defined"}],
         },
         {
             "layout": "metrics",
             "eyebrow": "Why Now",
-            "title": "The Timing Has Shifted From AI Experiments To AI Operations",
-            "subtitle": market_hint,
+            "title": "The Timing Needs A Clear Trigger",
+            "subtitle": timing_point,
             "bullets": [
-                "LLMs are strong enough for knowledge work, but enterprise adoption needs orchestration.",
-                "Companies are moving from isolated copilots to governed, auditable AI workflows.",
-                "Infrastructure cost pressure makes routing, caching, and retrieval quality strategic.",
+                "Connect current data points to a change in urgency or willingness to adopt.",
+                "Explain why the opportunity is better now than it was one or two years ago.",
+                _point(points, 5, "Use source evidence for policy, market, funding, or technology shifts."),
             ],
-            "metrics": [{"label": "Buyer priority", "value": "ROI"}, {"label": "Blocker", "value": "Trust"}],
+            "metrics": [{"label": "Timing", "value": "Now"}, {"label": "Trigger", "value": "Evidence"}],
         },
         {
             "layout": "solution",
-            "eyebrow": "Solution",
-            "title": f"{title} Turns Company Knowledge Into Action",
-            "subtitle": "A secure AI platform that connects data, reasons over context, and delivers workflow-ready outputs.",
+            "eyebrow": "Opportunity",
+            "title": "A Focused Opportunity Beats A Broad Sector Claim",
+            "subtitle": "Start with the segment where the pain, budget, and ability to implement overlap.",
             "bullets": [
-                "Connects to existing data sources and normalizes them into a governed knowledge layer.",
-                "Routes tasks across retrieval, agents, tools, and models based on risk and complexity.",
-                "Produces cited answers, automations, dashboards, and presentation-ready deliverables.",
+                "Define the beachhead use case and the measurable outcome it improves.",
+                "Explain why this target segment can adopt faster than the whole market.",
+                "Use the broader landscape as expansion logic, not as the whole thesis.",
             ],
-            "metrics": [{"label": "Setup", "value": "Days"}, {"label": "Outputs", "value": "Multi-format"}],
-        },
-        {
-            "layout": "architecture",
-            "eyebrow": "Product",
-            "title": "A Modular Platform Built For Enterprise Workflows",
-            "subtitle": "Each layer can improve independently while keeping governance centralized.",
-            "bullets": [
-                "Data connectors ingest documents, apps, databases, and collaboration history.",
-                "Retrieval and memory services keep answers grounded in approved company context.",
-                "Agent orchestration executes multi-step tasks with human review where needed.",
-                "Analytics show cost, quality, usage, risk, and business impact.",
-            ],
-            "metrics": [{"label": "Layers", "value": "4"}, {"label": "Control", "value": "Central"}],
-        },
-        {
-            "layout": "architecture",
-            "eyebrow": "How It Works",
-            "title": "From Prompt To Verified Output",
-            "subtitle": "The workflow mirrors the Manus-style process: research, plan, render, then export.",
-            "bullets": [
-                "Research: collect market, customer, and competitive context.",
-                "Plan: turn findings into a slide-by-slide narrative.",
-                "Generate: produce HTML slides for fast visual review.",
-                "Export: convert the approved structure into a PowerPoint file.",
-            ],
-            "metrics": [{"label": "Workflow", "value": "4 steps"}],
+            "metrics": [{"label": "Beachhead", "value": "Focused"}, {"label": "Expansion", "value": "Planned"}],
         },
         {
             "layout": "market",
-            "eyebrow": "Market",
-            "title": "Large Market, Clear Beachhead",
-            "subtitle": "Start with high-value enterprise knowledge workflows, then expand across functions.",
+            "eyebrow": "Evidence",
+            "title": "What The Research Says",
+            "subtitle": _point(points, 6, "The source list should drive the claims, not decorate a finished deck."),
             "bullets": [
-                "TAM: broad enterprise AI software and automation spend.",
-                "SAM: mid-market and enterprise teams with complex knowledge operations.",
-                "SOM: regulated teams where security, auditability, and accuracy drive willingness to pay.",
+                _point(points, 0, "Use the strongest source finding as the first proof point."),
+                _point(points, 1, "Use the second source finding to validate the problem or market."),
+                _point(points, 2, "Use the third source finding to shape positioning or timing."),
             ],
-            "metrics": [{"label": "TAM", "value": "$150B+"}, {"label": "Beachhead", "value": "Ops + Analytics"}],
+            "metrics": [{"label": "Sources", "value": str(len(research.get("sources", [])))}, {"label": "Claims", "value": "Grounded"}],
         },
         {
             "layout": "solution",
-            "eyebrow": "Use Cases",
-            "title": "High-Frequency Workflows Create Expansion",
-            "subtitle": "The platform starts with urgent jobs and grows into the operating layer for decisions.",
+            "eyebrow": "Market",
+            "title": "Market Logic And Adoption Path",
+            "subtitle": "The deck should show how the first use case can become a larger platform or service business.",
             "bullets": [
-                "Executive briefings and board materials generated from live company context.",
-                "Sales and support copilots that answer with policy-aware knowledge.",
-                "Research, diligence, and market monitoring workflows for strategy teams.",
-                "Compliance review and evidence packaging for regulated operations.",
+                "Describe TAM, SAM, and the initial reachable segment separately.",
+                "Show the adoption path by customer type, geography, channel, or workflow.",
+                "Tie growth to repeat usage, partnerships, distribution, or regulatory readiness.",
             ],
-            "metrics": [{"label": "Initial wedges", "value": "4"}],
+            "metrics": [{"label": "Segment", "value": "Specific"}, {"label": "Path", "value": "Sequenced"}],
         },
         {
             "layout": "comparison",
             "eyebrow": "Differentiation",
-            "title": "More Than A Generic LLM Wrapper",
-            "subtitle": "The moat is workflow ownership, proprietary context, quality feedback, and governance.",
+            "title": "Positioning Must Be Defensible",
+            "subtitle": "Differentiation should compare against the real alternatives visible in the market.",
             "bullets": [
-                "Context graph maps business entities, permissions, workflows, and decision history.",
-                "Model routing balances quality, latency, privacy, and cost per task.",
-                "Evaluation loops turn usage and human review into compounding quality improvements.",
+                "Name direct competitors, substitutes, and the status quo.",
+                "Explain what is meaningfully better: access, quality, cost, speed, trust, or integration.",
+                "Show why the advantage can compound over time.",
             ],
-            "metrics": [{"label": "Accuracy lift", "value": "+20%"}, {"label": "TCO reduction", "value": "30-40%"}],
+            "metrics": [{"label": "Alternatives", "value": "Compared"}, {"label": "Advantage", "value": "Clear"}],
         },
         {
             "layout": "metrics",
-            "eyebrow": "Business Model",
-            "title": "Subscription Revenue With Usage Expansion",
-            "subtitle": "Pricing aligns with seats, workflows, data volume, and premium automation.",
+            "eyebrow": "Model",
+            "title": "Business Model And Unit Economics",
+            "subtitle": "The revenue logic should match how the buyer already pays for outcomes or services.",
             "bullets": [
-                "Team tier for departmental pilots and proof-of-value work.",
-                "Enterprise tier for security controls, integrations, admin, and analytics.",
-                "Usage-based add-ons for high-volume agents, retrieval, and generation.",
-                "Services accelerate onboarding without becoming the core revenue engine.",
+                "Define who pays, when they pay, and what value metric pricing follows.",
+                "Separate recurring revenue, implementation fees, services, and partnership revenue.",
+                "List the assumptions that need validation in pilots.",
             ],
-            "metrics": [{"label": "Gross margin target", "value": "75%+"}, {"label": "Expansion", "value": "Usage"}],
+            "metrics": [{"label": "Buyer", "value": "Known"}, {"label": "Pricing", "value": "Testable"}],
         },
         {
             "layout": "metrics",
-            "eyebrow": "Traction",
-            "title": "Early Signals Show Pull From Enterprise Teams",
-            "subtitle": "Use real company data here when available; these placeholders show the target evidence type.",
+            "eyebrow": "Proof",
+            "title": "Traction And Validation Plan",
+            "subtitle": "Use real company evidence when available; otherwise show the exact validation plan.",
             "bullets": [
-                "Pilot customers use the platform weekly for research, reporting, and decision support.",
-                "Time-to-output improves as reusable workflows and knowledge bases compound.",
-                "Pipeline is concentrated in teams with measurable pain and budget ownership.",
+                "Summarize pilots, LOIs, partnerships, usage, revenue, or expert validation.",
+                "Define the next three proof points needed to reduce investor risk.",
+                "Connect traction metrics directly to the problem and buyer budget.",
             ],
-            "metrics": [{"label": "Pilot target", "value": "15"}, {"label": "ARR target", "value": "$500K"}],
+            "metrics": [{"label": "Proof", "value": "Needed"}, {"label": "Risk", "value": "Reducing"}],
         },
         {
             "layout": "roadmap",
-            "eyebrow": "Roadmap",
-            "title": "Focused Roadmap To Scale Quality And Distribution",
-            "subtitle": "The next phase deepens integrations, governance, and repeatable vertical workflows.",
+            "eyebrow": "Execution",
+            "title": "Roadmap From Insight To Adoption",
+            "subtitle": "The roadmap should move from research-backed wedge to repeatable execution.",
             "bullets": [
-                "Quarter 1: self-serve workspace setup, core connectors, and evaluation dashboards.",
-                "Quarter 2: workflow templates for finance, healthcare, legal, and operations teams.",
-                "Quarter 3: admin controls, marketplace connectors, and partner implementation kits.",
+                "Phase 1: validate the highest-risk assumptions with the first target users.",
+                "Phase 2: build repeatable delivery, partnerships, and measurement.",
+                "Phase 3: expand across adjacent segments once the wedge is proven.",
             ],
             "metrics": [{"label": "Horizon", "value": "12 months"}],
         },
         {
-            "layout": "team",
-            "eyebrow": "Team",
-            "title": "Built By AI, Infrastructure, And Enterprise Operators",
-            "subtitle": "The right team combines model expertise with the patience to solve enterprise deployment.",
+            "layout": "comparison",
+            "eyebrow": "Risks",
+            "title": "Risks And Mitigations",
+            "subtitle": "Credible decks name adoption blockers before investors do.",
             "bullets": [
-                "CEO: AI product leader with enterprise workflow experience.",
-                "CTO: retrieval, platform, and distributed systems background.",
-                "GTM Lead: sold data and automation platforms into regulated teams.",
-                "Advisors: security, vertical workflow, and AI evaluation experts.",
+                "Adoption risk: prove workflow fit with a narrow initial segment.",
+                "Execution risk: define owner, timeline, partner dependency, and success metric.",
+                "Policy or trust risk: show compliance, governance, and stakeholder buy-in plan.",
             ],
-            "metrics": [{"label": "Core functions", "value": "AI + GTM"}],
+            "metrics": [{"label": "Risks", "value": "Named"}, {"label": "Plan", "value": "Mitigated"}],
         },
         {
             "layout": "ask",
             "eyebrow": "The Ask",
-            "title": "Seeking Seed Capital To Turn Pull Into Repeatable Growth",
-            "subtitle": "Funding accelerates product maturity, enterprise readiness, and go-to-market learning.",
+            "title": "The Ask Should Match The Next Milestone",
+            "subtitle": "Close with the capital, partnership, or decision needed to prove the opportunity.",
             "bullets": [
-                "40% product and engineering: workflow builder, evaluation, integrations.",
-                "35% sales and marketing: founder-led sales, vertical playbooks, partner channel.",
-                "25% infrastructure and security: scale, observability, compliance readiness.",
+                "Specify the funding amount or decision requested.",
+                "Tie use of funds to product, operations, distribution, and validation milestones.",
+                "Define what success looks like at the next financing or decision point.",
             ],
-            "metrics": [{"label": "Raise", "value": "$5M"}, {"label": "Runway", "value": "18 months"}],
+            "metrics": [{"label": "Ask", "value": "Specific"}, {"label": "Milestone", "value": "Next"}],
         },
         {
             "layout": "closing",
             "eyebrow": "Close",
-            "title": "The Operating Layer For AI-Driven Enterprises",
-            "subtitle": "Join us in turning scattered company knowledge into secure, measurable execution.",
+            "title": f"{title}: From Research To Action",
+            "subtitle": "The opportunity is strongest when evidence, focus, and execution plan reinforce each other.",
             "bullets": [
-                "Next step: pilot the highest-value workflow with one enterprise team.",
-                "Contact: founders@example.com",
-                "Website: nextgen-ai.example",
+                "Lead with the clearest evidence from the research.",
+                "Focus the next step on one measurable decision or pilot.",
+                "Use updated source data before presenting externally.",
             ],
-            "metrics": [{"label": "Next step", "value": "Pilot"}],
+            "metrics": [{"label": "Next step", "value": "Decision"}],
         },
     ]
 
     slides = templates[:slide_count]
+    if slide_count < len(templates) and slides:
+        slides[-1] = templates[-1]
     while len(slides) < slide_count:
         index = len(slides) + 1
         slides.append(
@@ -323,11 +405,50 @@ def _fallback_deck(prompt: str, topic: str, slide_count: int, research: dict[str
     return {
         "title": f"{title} Pitch Deck",
         "subtitle": subtitle,
-        "audience": "Investors and enterprise buyers",
+        "audience": "Investors, operators, and decision-makers",
         "topic": topic,
         "prompt": prompt,
         "slides": slides,
     }
+
+
+def _research_points(research: dict[str, Any]) -> list[str]:
+    points: list[str] = []
+    for insight in research.get("insights", []):
+        _append_point(points, insight)
+    for source in research.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        for key in ("excerpt", "snippet"):
+            _append_point(points, source.get(key, ""))
+            if len(points) >= 10:
+                return points
+    return points
+
+
+def _append_point(points: list[str], value: Any) -> None:
+    text = _compact_text(str(value or ""))
+    if not text:
+        return
+    if text not in points:
+        points.append(text)
+
+
+def _point(points: list[str], index: int, fallback: str) -> str:
+    if index < len(points):
+        return points[index]
+    return fallback
+
+
+def _compact_text(value: str, limit: int = 190) -> str:
+    text = re.sub(r"\s+", " ", value).strip()
+    text = re.sub(r"\bMissing:.*$", "", text).strip()
+    if not text:
+        return ""
+    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    if len(sentence) <= limit:
+        return sentence
+    return sentence[: limit - 1].rstrip(" ,;:-") + "."
 
 
 def normalize_deck(
@@ -350,6 +471,11 @@ def normalize_deck(
         metrics = raw.get("metrics") or []
         if not isinstance(metrics, list):
             metrics = []
+        raw_citations = raw.get("citations") or raw.get("source_refs") or []
+        if isinstance(raw_citations, (list, tuple)):
+            citations = [str(item) for item in raw_citations if item]
+        else:
+            citations = []
         slides.append(
             {
                 "number": index,
@@ -361,6 +487,7 @@ def normalize_deck(
                 "bullets": [str(item) for item in bullets[:5]],
                 "metrics": [_normalize_metric(item) for item in metrics[:4]],
                 "speaker_notes": str(raw.get("speaker_notes") or raw.get("notes") or ""),
+                "citations": citations,
             }
         )
 
@@ -379,6 +506,7 @@ def normalize_deck(
                     "bullets": raw["bullets"],
                     "metrics": raw["metrics"],
                     "speaker_notes": "",
+                    "citations": [],
                 }
             )
 
@@ -462,13 +590,13 @@ def _layout_for_index(index: int, slide_count: int) -> str:
 def _title_for_topic(topic: str) -> str:
     words = topic.strip()
     if not words:
-        return "NextGen AI Platform"
+        return "Research Opportunity"
     if "ai" in words.lower() and "platform" in words.lower():
         return "NextGen AI Platform"
-    return "NextGen " + words.title()
+    return words.title()
 
 
 def _subtitle_for_topic(topic: str) -> str:
     if "ai" in topic.lower():
         return "Revolutionizing enterprise decision-making with scalable intelligence"
-    return "Turning market insight into an investor-ready growth story"
+    return "Turning live research into an investor-ready growth story"
