@@ -1,2 +1,21 @@
+# Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Local environments and secrets
+.env
+**/.env
+.venv/
+
+# Generated app output
+pptx_agent/output/
+
+# Local runtime files
+*.log
+*.pid
+
+# Node / Vite frontend
+**/node_modules/
+pptx_agent/web/dist/
