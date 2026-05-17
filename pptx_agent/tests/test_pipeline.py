@@ -1,12 +1,13 @@
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 from pptx_agent.config import Settings
-from pptx_agent.planner import build_deck, deck_structure_text, extract_slide_count
+from pptx_agent.planner import build_deck, deck_structure_text, extract_slide_count, slide_content_markdown
 from pptx_agent.pptx_writer import PptxWriter
-from pptx_agent.research import Researcher
+from pptx_agent.research import Researcher, SearchResult
 
 
 class PipelineTest(unittest.TestCase):
@@ -68,6 +69,68 @@ class PipelineTest(unittest.TestCase):
             results = researcher._search_searxng("AI pitch deck")
             self.assertEqual(results[0].title, "AI pitch deck structure")
             self.assertEqual(results[0].url, "https://example.com/deck")
+
+    def test_deep_research_searches_multiple_query_angles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = replace(
+                self.settings(root),
+                search_provider="searxng",
+                search_depth="deep",
+                max_search_results=6,
+                max_search_queries=3,
+                max_results_per_query=2,
+            )
+            researcher = Researcher(settings)
+            calls: list[str] = []
+
+            def fake_search(provider: str, query: str) -> list[SearchResult]:
+                calls.append(query)
+                return [
+                    SearchResult(
+                        title=f"{query} result {index}",
+                        url=f"https://example.com/{len(calls)}-{index}",
+                        snippet=f"Evidence for {query} item {index}.",
+                    )
+                    for index in range(4)
+                ]
+
+            researcher._search = fake_search  # type: ignore[method-assign]
+            researcher._enrich_sources = lambda sources: 0  # type: ignore[method-assign]
+
+            result = researcher.run("Create a deck on healthcare in Bangladesh", "healthcare in Bangladesh")
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(result["sources"]), 6)
+            self.assertIn("Deep SearXNG research enabled", "\n".join(result["logs"]))
+
+    def test_fallback_deck_uses_research_topic_instead_of_ai_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = self.settings(root)
+            research = {
+                "sources": [
+                    {
+                        "title": "Health system of Bangladesh",
+                        "url": "https://example.com/health",
+                        "snippet": "The health care system of Bangladesh has primary, secondary, and tertiary levels.",
+                    }
+                ],
+                "insights": [
+                    "Map the system structure clearly, including primary, secondary, tertiary, and community-level delivery where relevant."
+                ],
+            }
+
+            deck, logs = build_deck(
+                "Create a slide on healthcare system in Bangladesh",
+                10,
+                research,
+                settings,
+            )
+            content = slide_content_markdown(deck)
+            self.assertIn("Healthcare System In Bangladesh", deck["title"])
+            self.assertIn("primary, secondary, tertiary", content)
+            self.assertNotIn("Generic AI", content)
+            self.assertTrue(logs)
 
 
 if __name__ == "__main__":
