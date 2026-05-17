@@ -41,6 +41,10 @@ class Settings:
     serper_api_key: str
     tavily_api_key: str
     max_search_results: int
+    search_depth: str = "deep"
+    max_search_queries: int = 7
+    max_results_per_query: int = 4
+    max_source_chars: int = 1400
 
 
 def load_settings(root: Path) -> Settings:
@@ -53,12 +57,27 @@ def load_settings(root: Path) -> Settings:
         port = 8787
 
     try:
-        max_search_results = max(1, min(10, int(_env("MAX_SEARCH_RESULTS", "6"))))
+        max_search_results = max(1, min(30, int(_env("MAX_SEARCH_RESULTS", "18"))))
     except ValueError:
-        max_search_results = 6
+        max_search_results = 18
+    try:
+        max_search_queries = max(1, min(10, int(_env("MAX_SEARCH_QUERIES", "7"))))
+    except ValueError:
+        max_search_queries = 7
+    try:
+        max_results_per_query = max(1, min(10, int(_env("MAX_RESULTS_PER_QUERY", "4"))))
+    except ValueError:
+        max_results_per_query = 4
+    try:
+        max_source_chars = max(300, min(4000, int(_env("MAX_SOURCE_CHARS", "1400"))))
+    except ValueError:
+        max_source_chars = 1400
 
     output_dir = root / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
+    search_depth = (_env("SEARCH_DEPTH", "deep") or "deep").lower()
+    if search_depth not in {"standard", "deep"}:
+        search_depth = "deep"
 
     return Settings(
         root=root,
@@ -74,4 +93,8 @@ def load_settings(root: Path) -> Settings:
         serper_api_key=_env("SERPER_API_KEY"),
         tavily_api_key=_env("TAVILY_API_KEY"),
         max_search_results=max_search_results,
+        search_depth=search_depth,
+        max_search_queries=max_search_queries,
+        max_results_per_query=max_results_per_query,
+        max_source_chars=max_source_chars,
     )
