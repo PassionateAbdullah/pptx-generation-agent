@@ -1,19 +1,22 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { ThemePicker } from "./ThemePicker";
 
 interface Props {
   disabled: boolean;
-  onSubmit: (event: FormEvent<HTMLFormElement>, prompt: string, slideCount: number) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>, prompt: string, slideCount: number, theme: string) => void;
+  theme: string;
+  onThemeChange: (name: string) => void;
 }
 
-export function PromptForm({ disabled, onSubmit }: Props) {
+export function PromptForm({ disabled, onSubmit, theme, onThemeChange }: Props) {
   const [prompt, setPrompt] = useState("Create a 10-slide pitch deck for our AI platform.");
   const [slideCount, setSlideCount] = useState(10);
 
   return (
     <form
       className="prompt-form"
-      onSubmit={(event) => onSubmit(event, prompt, slideCount)}
+      onSubmit={(event) => onSubmit(event, prompt, slideCount, theme)}
     >
       <label htmlFor="prompt">Prompt</label>
       <textarea
@@ -35,6 +38,7 @@ export function PromptForm({ disabled, onSubmit }: Props) {
           disabled={disabled}
         />
       </div>
+      <ThemePicker value={theme} onChange={onThemeChange} disabled={disabled} />
       <button className="btn primary block" type="submit" disabled={disabled}>
         {disabled ? "Generating…" : "Generate Deck"}
       </button>
