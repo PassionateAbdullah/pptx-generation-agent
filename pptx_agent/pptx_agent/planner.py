@@ -4,10 +4,16 @@ import json
 import re
 from typing import Any, Iterator
 
+from .blocks import normalize_blocks, slide_to_blocks
 from .citations import cite_slide
 from .config import Settings
+from .dynamic_blocks import compose_slide_blocks, optimize_deck_variety, variety_score
+from .dynamic_outline import build_outline
+from .hedge_filter import scrub_bullets, scrub_paragraph
+from .topic_families import detect_family
 from .events import PHASE_CONTENT, PHASE_OUTLINE, make_event
 from .llm import LLMClient
+from .themes import DEFAULT_THEME, get_theme
 from .utils import clamp, slugify
 
 
@@ -41,10 +47,16 @@ def extract_topic(prompt: str) -> str:
     return "startup platform"
 
 
-def build_deck(prompt: str, slide_count: int, research: dict[str, Any], settings: Settings) -> tuple[dict[str, Any], list[str]]:
+def build_deck(
+    prompt: str,
+    slide_count: int,
+    research: dict[str, Any],
+    settings: Settings,
+    theme: str | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     logs: list[str] = []
     deck: dict[str, Any] | None = None
-    for event in iter_build_deck(prompt, slide_count, research, settings):
+    for event in iter_build_deck(prompt, slide_count, research, settings, theme=theme):
         etype = event.get("type")
         if etype == "log":
             logs.append(event.get("text", ""))
@@ -52,7 +64,11 @@ def build_deck(prompt: str, slide_count: int, research: dict[str, Any], settings
             deck = event.get("result")
     if deck is None:
         topic = extract_topic(prompt)
-        deck = normalize_deck(_fallback_deck(prompt, topic, slide_count, research), prompt, topic, slide_count, research)
+        deck = normalize_deck(
+            build_outline(prompt, topic, slide_count, research),
+            prompt, topic, slide_count, research,
+        )
+        deck["theme"] = get_theme(theme).name
     return deck, logs
 
 
@@ -61,11 +77,13 @@ def iter_build_deck(
     slide_count: int,
     research: dict[str, Any],
     settings: Settings,
+    theme: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     yield make_event("phase_start", id=PHASE_OUTLINE, label="Plan outline")
     topic = extract_topic(prompt)
     llm = LLMClient(settings)
     deck: dict[str, Any] | None = None
+    resolved_theme = get_theme(theme).name
 
     if llm.enabled:
         yield make_event("log", phase=PHASE_OUTLINE, text=f"LLM planner enabled with model: {settings.llm_model}.")
@@ -83,7 +101,21 @@ def iter_build_deck(
         yield make_event("log", phase=PHASE_OUTLINE, text="LLM planner not configured. Using deterministic planner.")
 
     if deck is None:
-        deck = normalize_deck(_fallback_deck(prompt, topic, slide_count, research), prompt, topic, slide_count, research)
+        family = detect_family(prompt)
+        yield make_event(
+            "log",
+            phase=PHASE_OUTLINE,
+            text=f"Topic family detected: {family.name} ({family.label}).",
+        )
+        outline_deck = build_outline(prompt, topic, slide_count, research)
+        yield make_event(
+            "log",
+            phase=PHASE_OUTLINE,
+            text=f"Outline built from research: {len(outline_deck['slides'])} slide(s).",
+        )
+        deck = normalize_deck(outline_deck, prompt, topic, slide_count, research)
+
+    deck["theme"] = resolved_theme
 
     sources = research.get("sources") or []
     for slide in deck["slides"]:
@@ -93,6 +125,18 @@ def iter_build_deck(
         else:
             slide["citations"] = cite_slide(slide, sources)
 
+    # Phase 8 optimize pass: critique variety, rotate recipes if too uniform.
+    score_before = variety_score([s.get("blocks") or [] for s in deck["slides"]])
+    changed, score_after = optimize_deck_variety(deck, research, topic_seed=topic)
+    yield make_event(
+        "log",
+        phase=PHASE_OUTLINE,
+        text=(
+            f"Variety score: {score_before:.2f}"
+            + (f" → {score_after:.2f} after optimize" if changed else " (no optimize needed)")
+        ),
+    )
+
     yield make_event(
         "deck_meta",
         phase=PHASE_OUTLINE,
@@ -100,6 +144,7 @@ def iter_build_deck(
         subtitle=deck.get("subtitle", ""),
         slide_count=deck["slide_count"],
         topic=deck.get("topic", topic),
+        theme=resolved_theme,
     )
     for slide in deck["slides"]:
         yield make_event(
@@ -476,40 +521,61 @@ def normalize_deck(
             citations = [str(item) for item in raw_citations if item]
         else:
             citations = []
-        slides.append(
-            {
-                "number": index,
-                "id": f"slide-{index}",
-                "layout": str(raw.get("layout") or _layout_for_index(index, slide_count)),
-                "eyebrow": str(raw.get("eyebrow") or f"Slide {index}"),
-                "title": str(raw.get("title") or f"Slide {index}"),
-                "subtitle": str(raw.get("subtitle") or ""),
-                "bullets": [str(item) for item in bullets[:5]],
-                "metrics": [_normalize_metric(item) for item in metrics[:4]],
-                "speaker_notes": str(raw.get("speaker_notes") or raw.get("notes") or ""),
-                "citations": citations,
-            }
-        )
+        cleaned_bullets = scrub_bullets([str(item) for item in bullets[:8]])[:5]
+        slide_dict = {
+            "number": index,
+            "id": f"slide-{index}",
+            "layout": str(raw.get("layout") or _layout_for_index(index, slide_count)),
+            "eyebrow": str(raw.get("eyebrow") or f"Slide {index}"),
+            "title": scrub_paragraph(str(raw.get("title") or f"Slide {index}")),
+            "subtitle": scrub_paragraph(str(raw.get("subtitle") or "")),
+            "bullets": cleaned_bullets,
+            "metrics": [_normalize_metric(item) for item in metrics[:4]],
+            "speaker_notes": str(raw.get("speaker_notes") or raw.get("notes") or ""),
+            "citations": citations,
+            "accent_variant": int(raw.get("accent_variant") if raw.get("accent_variant") is not None else (index - 1) % 4),
+        }
+        raw_blocks = raw.get("blocks")
+        if isinstance(raw_blocks, list) and raw_blocks:
+            slide_dict["blocks"] = normalize_blocks(index, raw_blocks)
+        else:
+            # Phase 8: dynamic composition for slide variety.
+            slide_dict["blocks"] = compose_slide_blocks(
+                slide_dict,
+                position=index - 1,
+                total=slide_count,
+                research=research,
+                topic_seed=topic,
+            )
+        slides.append(slide_dict)
 
     if len(slides) < slide_count:
-        fallback = _fallback_deck(prompt, topic, slide_count, research)
+        fallback = build_outline(prompt, topic, slide_count, research)
         for raw in fallback["slides"][len(slides) : slide_count]:
             index = len(slides) + 1
-            slides.append(
-                {
-                    "number": index,
-                    "id": f"slide-{index}",
-                    "layout": raw["layout"],
-                    "eyebrow": raw["eyebrow"],
-                    "title": raw["title"],
-                    "subtitle": raw["subtitle"],
-                    "bullets": raw["bullets"],
-                    "metrics": raw["metrics"],
-                    "speaker_notes": "",
-                    "citations": [],
-                }
+            slide_dict = {
+                "number": index,
+                "id": f"slide-{index}",
+                "layout": raw["layout"],
+                "eyebrow": raw["eyebrow"],
+                "title": raw["title"],
+                "subtitle": raw["subtitle"],
+                "bullets": raw["bullets"],
+                "metrics": raw["metrics"],
+                "speaker_notes": "",
+                "citations": [],
+                "accent_variant": (index - 1) % 4,
+            }
+            slide_dict["blocks"] = compose_slide_blocks(
+                slide_dict,
+                position=index - 1,
+                total=slide_count,
+                research=research,
+                topic_seed=topic,
             )
+            slides.append(slide_dict)
 
+    theme_name = get_theme(str(deck.get("theme") or DEFAULT_THEME)).name
     return {
         "title": title,
         "subtitle": subtitle,
@@ -518,6 +584,8 @@ def normalize_deck(
         "audience": str(deck.get("audience") or "Investors"),
         "prompt": prompt,
         "slide_count": slide_count,
+        "theme": theme_name,
+        "family": str(deck.get("family") or ""),
         "research": research,
         "slides": slides,
     }
