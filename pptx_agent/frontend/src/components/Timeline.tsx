@@ -30,6 +30,21 @@ export function Timeline({ job, selected, onSelect }: Props) {
 
   return (
     <ol className="timeline">
+      {job.slides.size > 0 && (
+        <li>
+          <button
+            type="button"
+            className={`timeline-card${selected.kind === "deck" ? " active" : ""} done`}
+            onClick={() => onSelect({ kind: "deck" })}
+          >
+            <span className="timeline-status">▦</span>
+            <div className="timeline-body">
+              <strong>All slides</strong>
+              <span className="timeline-desc">{job.slides.size} drafted · click to view stack</span>
+            </div>
+          </button>
+        </li>
+      )}
       {job.phaseOrder.map((phaseId) => {
         const phase = job.phases[phaseId];
         if (!phase) return null;
