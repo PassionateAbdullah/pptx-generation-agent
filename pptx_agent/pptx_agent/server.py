@@ -9,8 +9,12 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .config import Settings
-from .pipeline import iter_pipeline_with_persist, run_pipeline_and_persist
+from .editor import apply_deck_patch, apply_slide_patch, recompute_citations
+from .images import ImageBroker, guess_mime
+from .pipeline import iter_pipeline_with_persist, run_pipeline_and_persist, write_deck_artifacts
 from .pptx_writer import PptxWriter
+from .regen import regenerate_slide
+from .themes import DEFAULT_THEME, list_themes
 from .utils import read_json
 
 
@@ -60,8 +64,17 @@ def _make_handler(settings: Settings):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
+            if path == "/api/themes":
+                self._send_json({"default": DEFAULT_THEME, "themes": list_themes()})
+                return
+            if path == "/api/images":
+                self._search_images(parsed.query)
+                return
             if path.startswith("/api/jobs/") and path.endswith("/events.stream"):
                 self._replay_events_sse(path)
+                return
+            if "/media/" in path and path.startswith("/api/jobs/"):
+                self._serve_media(path)
                 return
             if path.startswith("/api/jobs/"):
                 self._serve_job_asset(path)
@@ -81,10 +94,229 @@ def _make_handler(settings: Settings):
             if parsed.path == "/api/generate/stream":
                 self._generate_stream()
                 return
+            path = unquote(parsed.path)
+            if path.startswith("/api/jobs/") and path.endswith("/images"):
+                self._download_image(path)
+                return
+            if "/slides/" in path and path.endswith("/regenerate") and path.startswith("/api/jobs/"):
+                self._regenerate_slide(path)
+                return
+            self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            path = unquote(parsed.path)
+            if self._match_slide_patch(path):
+                return
+            if self._match_deck_patch(path):
+                return
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
         def log_message(self, fmt: str, *args: object) -> None:
             print(f"{self.address_string()} - {fmt % args}")
+
+        def _search_images(self, query_string: str) -> None:
+            from urllib.parse import parse_qs
+            params = parse_qs(query_string)
+            q = (params.get("q") or [""])[0].strip()
+            try:
+                n = max(1, min(24, int((params.get("n") or ["12"])[0])))
+            except ValueError:
+                n = 12
+            if not q:
+                self._send_json({"error": "Query 'q' is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                broker = ImageBroker(settings)
+                results = broker.search(q, max_n=n)
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": str(exc), "results": []})
+                return
+            self._send_json({
+                "query": q,
+                "provider": "searxng" if broker._searxng_urls() else "none",
+                "results": [r.as_dict() for r in results],
+            })
+
+        def _regenerate_slide(self, path: str) -> None:
+            # /api/jobs/<job_id>/slides/<n>/regenerate
+            parts = path.strip("/").split("/")
+            if len(parts) != 6 or parts[:2] != ["api", "jobs"] or parts[3] != "slides" or parts[5] != "regenerate":
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
+            try:
+                slide_number = int(parts[4])
+            except ValueError:
+                self._send_json({"error": "Slide number must be int."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            job_dir = self._resolve_job_dir(job_id)
+            if job_dir is None:
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = self._read_json()
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"Bad JSON: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            instruction = str(payload.get("instruction") or "").strip()
+            refresh_research = bool(payload.get("refresh_research"))
+            try:
+                deck = read_json(job_dir / "deck.json")
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"deck.json unreadable: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            try:
+                updated_slide = regenerate_slide(
+                    deck, slide_number, instruction, settings,
+                    refresh_research=refresh_research,
+                )
+                recompute_citations(deck)
+                write_deck_artifacts(deck, job_dir)
+            except KeyError:
+                self._send_json({"error": "Slide not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json({
+                "job_id": job_id,
+                "slide": updated_slide,
+                "html_url": f"/api/jobs/{job_id}/slides.html",
+                "download_url": f"/api/jobs/{job_id}/deck.pptx",
+            })
+
+        def _download_image(self, path: str) -> None:
+            parts = path.strip("/").split("/")
+            if len(parts) != 4 or parts[:2] != ["api", "jobs"] or parts[3] != "images":
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
+            job_dir = self._resolve_job_dir(job_id)
+            if job_dir is None:
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = self._read_json()
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"Bad JSON: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            url = str(payload.get("url") or "").strip()
+            if not url:
+                self._send_json({"error": "url required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                meta = ImageBroker(settings).fetch_into_job(job_dir, url)
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(meta)
+
+        def _serve_media(self, path: str) -> None:
+            # /api/jobs/<job_id>/media/<file>
+            parts = path.strip("/").split("/")
+            if len(parts) != 5 or parts[:2] != ["api", "jobs"] or parts[3] != "media":
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
+            filename = parts[4]
+            job_dir = self._resolve_job_dir(job_id)
+            if job_dir is None:
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            candidate = (job_dir / "media" / filename).resolve()
+            try:
+                candidate.relative_to(job_dir.resolve())
+            except ValueError:
+                self._send_json({"error": "Invalid path."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not candidate.is_file():
+                self._send_json({"error": "Media not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._serve_file(candidate, guess_mime(candidate))
+
+        def _resolve_job_dir(self, job_id: str):
+            job_dir = (settings.output_dir / job_id).resolve()
+            try:
+                job_dir.relative_to(settings.output_dir.resolve())
+            except ValueError:
+                return None
+            return job_dir if job_dir.exists() else None
+
+        def _match_slide_patch(self, path: str) -> bool:
+            parts = path.strip("/").split("/")
+            if len(parts) != 5 or parts[:2] != ["api", "jobs"] or parts[3] != "slides":
+                return False
+            job_id = parts[2]
+            try:
+                slide_number = int(parts[4])
+            except ValueError:
+                self._send_json({"error": "Slide number must be int."}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            job_dir = self._resolve_job_dir(job_id)
+            if job_dir is None:
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return True
+            try:
+                payload = self._read_json()
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"Bad JSON: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            try:
+                deck = read_json(job_dir / "deck.json")
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"deck.json unreadable: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return True
+            try:
+                updated_slide = apply_slide_patch(deck, slide_number, payload)
+                recompute_citations(deck)
+                write_deck_artifacts(deck, job_dir)
+            except KeyError:
+                self._send_json({"error": "Slide not found."}, status=HTTPStatus.NOT_FOUND)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return True
+            self._send_json({
+                "job_id": job_id,
+                "slide": updated_slide,
+                "html_url": f"/api/jobs/{job_id}/slides.html",
+                "download_url": f"/api/jobs/{job_id}/deck.pptx",
+            })
+            return True
+
+        def _match_deck_patch(self, path: str) -> bool:
+            parts = path.strip("/").split("/")
+            if len(parts) != 4 or parts[:2] != ["api", "jobs"] or parts[3] != "deck":
+                return False
+            job_id = parts[2]
+            job_dir = self._resolve_job_dir(job_id)
+            if job_dir is None:
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return True
+            try:
+                payload = self._read_json()
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"Bad JSON: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            try:
+                deck = read_json(job_dir / "deck.json")
+                apply_deck_patch(deck, payload)
+                write_deck_artifacts(deck, job_dir)
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return True
+            self._send_json({
+                "job_id": job_id,
+                "title": deck.get("title"),
+                "subtitle": deck.get("subtitle"),
+                "theme": deck.get("theme"),
+                "html_url": f"/api/jobs/{job_id}/slides.html",
+            })
+            return True
 
         def _generate(self) -> None:
             try:
@@ -95,7 +327,8 @@ def _make_handler(settings: Settings):
                     return
                 requested_count = payload.get("slide_count")
                 explicit_count = int(requested_count) if requested_count else None
-                response = run_pipeline_and_persist(prompt, explicit_count, settings)
+                theme = str(payload.get("theme") or "").strip() or None
+                response = run_pipeline_and_persist(prompt, explicit_count, settings, theme=theme)
                 self._send_json(response)
             except Exception as exc:  # noqa: BLE001
                 traceback.print_exc()
@@ -116,10 +349,11 @@ def _make_handler(settings: Settings):
                 explicit_count = int(requested_count) if requested_count else None
             except (TypeError, ValueError):
                 explicit_count = None
+            theme = str(payload.get("theme") or "").strip() or None
 
             self._begin_sse()
             try:
-                for event in iter_pipeline_with_persist(prompt, explicit_count, settings):
+                for event in iter_pipeline_with_persist(prompt, explicit_count, settings, theme=theme):
                     if not self._write_sse(event):
                         return
             except Exception as exc:  # noqa: BLE001
@@ -224,7 +458,9 @@ def _make_handler(settings: Settings):
             if asset == "deck.pptx":
                 deck = read_json(job_dir / "deck.json")
                 pptx_path = job_dir / "deck.pptx"
-                PptxWriter().write(deck, pptx_path)
+                writer = PptxWriter()
+                writer.set_job_dir(job_dir)
+                writer.write(deck, pptx_path)
                 self._serve_file(
                     pptx_path,
                     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -237,6 +473,7 @@ def _make_handler(settings: Settings):
                 "pitch_deck_structure.txt": "text/plain; charset=utf-8",
                 "slide_content.md": "text/markdown; charset=utf-8",
                 "sources.md": "text/markdown; charset=utf-8",
+                "slide.md": "text/markdown; charset=utf-8",
                 "deck.json": "application/json; charset=utf-8",
                 "events.jsonl": "application/x-ndjson; charset=utf-8",
             }
@@ -274,4 +511,3 @@ def _make_handler(settings: Settings):
             self.wfile.write(body)
 
     return Handler
-
