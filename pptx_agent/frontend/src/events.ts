@@ -119,6 +119,7 @@ export interface DeckMetaEvent extends BaseEvent {
   subtitle: string;
   slide_count: number;
   topic: string;
+  theme?: string;
 }
 
 export interface SlideOutlineEvent extends BaseEvent {
@@ -131,22 +132,48 @@ export interface SlideOutlineEvent extends BaseEvent {
   layout: string;
 }
 
+export type BlockType =
+  | "eyebrow"
+  | "heading"
+  | "subheading"
+  | "paragraph"
+  | "bullets"
+  | "metric_row"
+  | "quote"
+  | "callout"
+  | "image"
+  | "chart"
+  | "diagram"
+  | "spacer"
+  | "hero_stat"
+  | "highlight";
+
+export interface SlideBlock {
+  id: string;
+  type: BlockType;
+  props: Record<string, unknown>;
+}
+
+export interface SlideData {
+  number: number;
+  id: string;
+  layout: string;
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  bullets: string[];
+  metrics: Array<{ label: string; value: string }>;
+  speaker_notes: string;
+  citations?: string[];
+  blocks?: SlideBlock[];
+  accent_variant?: number;
+}
+
 export interface SlideDetailEvent extends BaseEvent {
   type: "slide_detail";
   phase: PhaseId;
   number: number;
-  slide: {
-    number: number;
-    id: string;
-    layout: string;
-    eyebrow: string;
-    title: string;
-    subtitle: string;
-    bullets: string[];
-    metrics: Array<{ label: string; value: string }>;
-    speaker_notes: string;
-    citations?: string[];
-  };
+  slide: SlideData;
 }
 
 export interface FileEvent extends BaseEvent {

@@ -4,7 +4,7 @@ import type {
   PhaseId,
   ResultEvent,
   SearchSummaryEvent,
-  SlideDetailEvent,
+  SlideData,
   SlideOutlineEvent,
   SourceDict,
 } from "./events";
@@ -53,9 +53,9 @@ export interface JobState {
   phaseOrder: PhaseId[];
 
   research: ResearchState;
-  deckMeta: { title: string; subtitle: string; topic: string } | null;
+  deckMeta: { title: string; subtitle: string; topic: string; theme?: string } | null;
   outline: SlideOutlineEvent[];
-  slides: Map<number, SlideDetailEvent["slide"]>;
+  slides: Map<number, SlideData>;
   files: FileRecord[];
   deckReady: DeckReadyEvent | null;
   downloadUrl: string | null;
@@ -241,7 +241,12 @@ export function reduce(prev: JobState, event: AgentEvent): JobState {
       return state;
     }
     case "deck_meta": {
-      state.deckMeta = { title: event.title, subtitle: event.subtitle, topic: event.topic };
+      state.deckMeta = {
+        title: event.title,
+        subtitle: event.subtitle,
+        topic: event.topic,
+        theme: event.theme,
+      };
       return state;
     }
     case "slide_outline": {

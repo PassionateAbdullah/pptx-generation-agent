@@ -4,6 +4,7 @@ import type { AgentEvent } from "./events";
 export interface StreamRequest {
   prompt: string;
   slide_count: number;
+  theme?: string;
 }
 
 export type StreamStatus = "idle" | "running" | "done" | "error";
