@@ -5,18 +5,32 @@ interface Props {
   job: JobState;
   number: number;
   onSelect?: (view: SelectedView) => void;
+  onEdit?: (number: number) => void;
+  onPresent?: (startIndex: number) => void;
 }
 
-export function SlideView({ job, number, onSelect }: Props) {
+export function SlideView({ job, number, onSelect, onEdit, onPresent }: Props) {
   const slide = job.slides.get(number);
   if (!slide) return <p className="muted">Slide not yet drafted.</p>;
   const citations = job.citationsBySlide.get(number) ?? slide.citations ?? [];
+  const orderedNumbers = Array.from(job.slides.keys()).sort((a, b) => a - b);
+  const presentIndex = orderedNumbers.indexOf(number);
   return (
     <div className="slide-detail">
       <header>
         <span className="slide-num">{slide.number}/{job.slideCount}</span>
         <h2>{slide.title}</h2>
         <span className="layout-tag">{slide.layout}</span>
+        {onEdit && job.jobId && (
+          <button type="button" className="btn small primary" onClick={() => onEdit(number)}>
+            Edit slide
+          </button>
+        )}
+        {onPresent && presentIndex >= 0 && (
+          <button type="button" className="btn small ghost" onClick={() => onPresent(presentIndex)}>
+            Present from here
+          </button>
+        )}
       </header>
       {slide.subtitle && <p className="lead">{slide.subtitle}</p>}
       {slide.bullets.length > 0 && (
