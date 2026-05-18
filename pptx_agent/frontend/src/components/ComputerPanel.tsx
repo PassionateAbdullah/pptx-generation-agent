@@ -8,28 +8,33 @@ import { SlideView } from "./SlideView";
 import { ExportView } from "./ExportView";
 import { SummaryView } from "./SummaryView";
 import { SourcesView } from "./SourcesView";
+import { DeckView } from "./DeckView";
 import type { SelectedView } from "./types";
 
 interface Props {
   job: JobState;
   selected: SelectedView;
   onSelect: (view: SelectedView) => void;
+  onEditSlide?: (number: number) => void;
+  onPresent?: (startIndex: number) => void;
 }
 
-export function ComputerPanel({ job, selected, onSelect }: Props) {
+export function ComputerPanel({ job, selected, onSelect, onEditSlide, onPresent }: Props) {
   return (
     <div className="computer-panel">
       <header className="computer-header">
         <span className="computer-dot" />
         <span className="computer-title">{titleFor(job, selected)}</span>
       </header>
-      <div className="computer-body">{bodyFor(job, selected, onSelect)}</div>
+      <div className="computer-body">{bodyFor(job, selected, onSelect, onEditSlide, onPresent)}</div>
     </div>
   );
 }
 
 function titleFor(job: JobState, view: SelectedView): string {
   switch (view.kind) {
+    case "deck":
+      return `Deck · ${job.slides.size} slides`;
     case "phase":
       if (view.phaseId === "research") return "Research history";
       if (view.phaseId === "outline") return "Slide outline";
@@ -54,8 +59,16 @@ function titleFor(job: JobState, view: SelectedView): string {
   }
 }
 
-function bodyFor(job: JobState, view: SelectedView, onSelect: (v: SelectedView) => void) {
+function bodyFor(
+  job: JobState,
+  view: SelectedView,
+  onSelect: (v: SelectedView) => void,
+  onEditSlide?: (n: number) => void,
+  onPresent?: (startIndex: number) => void,
+) {
   switch (view.kind) {
+    case "deck":
+      return <DeckView job={job} onEditSlide={onEditSlide} onPresent={onPresent} />;
     case "phase":
       if (view.phaseId === "research") return <ResearchView job={job} />;
       if (view.phaseId === "outline") return <OutlineView job={job} />;
@@ -70,7 +83,7 @@ function bodyFor(job: JobState, view: SelectedView, onSelect: (v: SelectedView) 
     case "file":
       return <FileView job={job} path={view.path} />;
     case "slide":
-      return <SlideView job={job} number={view.number} onSelect={onSelect} />;
+      return <SlideView job={job} number={view.number} onSelect={onSelect} onEdit={onEditSlide} onPresent={onPresent} />;
     case "sources":
       return <SourcesView job={job} onSelect={onSelect} />;
     case "source":
