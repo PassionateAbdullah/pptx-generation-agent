@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Iterator
 
 from .config import Settings
@@ -14,13 +15,52 @@ from .planner import (
     slide_content_markdown,
 )
 from .research import Researcher
+from .slide_md import emit_slide_md
 from .utils import timestamp_id, write_json
+
+
+def write_deck_artifacts(
+    deck: dict[str, Any],
+    job_dir: Path,
+    research: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Render and persist every artifact derived from a deck.
+
+    Used by the initial pipeline run and by post-generation edits so that
+    deck.json, slides.html, sources.md, structure, and slide-content markdown
+    stay in lockstep with the in-memory deck.
+    """
+    research = research if research is not None else deck.get("research") or {}
+    structure = deck_structure_text(deck)
+    markdown = slide_content_markdown(deck)
+    html = render_full_html(deck)
+    preview_fragment = render_preview_fragment(deck)
+    sources_md = _sources_markdown(deck, research)
+    slide_md = emit_slide_md(deck)
+
+    job_dir.mkdir(parents=True, exist_ok=True)
+    write_json(job_dir / "deck.json", deck)
+    (job_dir / "pitch_deck_structure.txt").write_text(structure, encoding="utf-8")
+    (job_dir / "slide_content.md").write_text(markdown, encoding="utf-8")
+    (job_dir / "slides.html").write_text(html, encoding="utf-8")
+    (job_dir / "sources.md").write_text(sources_md, encoding="utf-8")
+    (job_dir / "slide.md").write_text(slide_md, encoding="utf-8")
+
+    return {
+        "structure": structure,
+        "slide_content": markdown,
+        "preview_html": preview_fragment,
+        "html": html,
+        "sources_md": sources_md,
+        "slide_md": slide_md,
+    }
 
 
 def iter_pipeline(
     prompt: str,
     explicit_slide_count: int | None,
     settings: Settings,
+    theme: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     slide_count = extract_slide_count(prompt, explicit_slide_count)
     topic = extract_topic(prompt)
@@ -34,6 +74,7 @@ def iter_pipeline(
         prompt=prompt,
         slide_count=slide_count,
         topic=topic,
+        theme=theme or "",
     )
 
     research: dict[str, Any] | None = None
@@ -45,7 +86,7 @@ def iter_pipeline(
         research = {"queries": [], "sources": [], "insights": [], "provider": "none"}
 
     deck: dict[str, Any] | None = None
-    for event in iter_build_deck(prompt, slide_count, research, settings):
+    for event in iter_build_deck(prompt, slide_count, research, settings, theme=theme):
         yield event
         if event.get("type") == "phase_end" and event.get("id") == PHASE_CONTENT:
             deck = event.get("result")
@@ -54,17 +95,11 @@ def iter_pipeline(
         return
 
     yield make_event("phase_start", id=PHASE_RENDER, label="Render HTML")
-    structure = deck_structure_text(deck)
-    markdown = slide_content_markdown(deck)
-    html = render_full_html(deck)
-    preview_fragment = render_preview_fragment(deck)
-    sources_md = _sources_markdown(deck, research)
-
-    write_json(job_dir / "deck.json", deck)
-    (job_dir / "pitch_deck_structure.txt").write_text(structure, encoding="utf-8")
-    (job_dir / "slide_content.md").write_text(markdown, encoding="utf-8")
-    (job_dir / "slides.html").write_text(html, encoding="utf-8")
-    (job_dir / "sources.md").write_text(sources_md, encoding="utf-8")
+    artifacts = write_deck_artifacts(deck, job_dir, research)
+    structure = artifacts["structure"]
+    markdown = artifacts["slide_content"]
+    preview_fragment = artifacts["preview_html"]
+    sources_md = artifacts["sources_md"]
 
     yield make_event("file", phase=PHASE_RENDER, path="pitch_deck_structure.txt", content=structure)
     yield make_event("file", phase=PHASE_RENDER, path="slide_content.md", content=markdown)
@@ -75,6 +110,7 @@ def iter_pipeline(
         url=f"/api/jobs/{job_id}/slides.html",
     )
     yield make_event("file", phase=PHASE_RENDER, path="sources.md", content=sources_md)
+    yield make_event("file", phase=PHASE_RENDER, path="slide.md", content=artifacts["slide_md"])
     yield make_event(
         "log",
         phase=PHASE_RENDER,
@@ -124,11 +160,12 @@ def iter_pipeline_with_persist(
     prompt: str,
     explicit_slide_count: int | None,
     settings: Settings,
+    theme: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Wrap iter_pipeline. Writes events.jsonl line-by-line once job_start fires."""
     fh = None
     try:
-        for event in iter_pipeline(prompt, explicit_slide_count, settings):
+        for event in iter_pipeline(prompt, explicit_slide_count, settings, theme=theme):
             if fh is None and event.get("type") == "job_start" and event.get("job_id"):
                 job_dir = settings.output_dir / event["job_id"]
                 job_dir.mkdir(parents=True, exist_ok=True)
@@ -147,12 +184,13 @@ def run_pipeline_and_persist(
     prompt: str,
     explicit_slide_count: int | None,
     settings: Settings,
+    theme: str | None = None,
 ) -> dict[str, Any]:
     """Drain iter_pipeline_with_persist, return summary for /api/generate."""
     summary: dict[str, Any] | None = None
     logs: list[str] = []
 
-    for event in iter_pipeline_with_persist(prompt, explicit_slide_count, settings):
+    for event in iter_pipeline_with_persist(prompt, explicit_slide_count, settings, theme=theme):
         etype = event.get("type")
         if etype == "log":
             logs.append(event.get("text", ""))
