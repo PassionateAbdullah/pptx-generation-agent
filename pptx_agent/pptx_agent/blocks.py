@@ -43,6 +43,7 @@ BLOCK_TYPES = {
     "spacer",
     "hero_stat",
     "highlight",
+    "table",
 }
 
 _DIAGRAM_BY_LAYOUT = {
@@ -123,6 +124,20 @@ def normalize_block(slide_number: int, index: int, raw: Any) -> dict[str, Any] |
         props.setdefault("tone", "accent")  # accent | warn | success | danger
         props.setdefault("title", "")
         props.setdefault("text", "")
+    elif type_ == "table":
+        # Shape: { headers: [str], rows: [[str]], caption: str }
+        headers = props.get("headers") or []
+        rows = props.get("rows") or []
+        if not isinstance(headers, (list, tuple)):
+            headers = []
+        clean_rows: list[list[str]] = []
+        if isinstance(rows, (list, tuple)):
+            for r in rows:
+                if isinstance(r, (list, tuple)):
+                    clean_rows.append([str(c) for c in r])
+        props["headers"] = [str(h) for h in headers]
+        props["rows"] = clean_rows
+        props["caption"] = str(props.get("caption") or "")
 
     return {
         "id": str(raw.get("id") or f"s{slide_number}-b{index}-{type_}"),
