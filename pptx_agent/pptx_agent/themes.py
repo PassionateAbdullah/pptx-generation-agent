@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_THEME = "slate"
+DEFAULT_THEME = "betopia"
 
 
 @dataclass(frozen=True)
@@ -152,6 +152,28 @@ THEMES: dict[str, Theme] = {
             "radius": "0px",
             "font_display": _serif(),
             "font_body": _mono(),
+        },
+    ),
+    "betopia": Theme(
+        name="betopia",
+        label="Betopia (Warm)",
+        mode="light",
+        tokens={
+            "ink": "#1f1b1a",
+            "muted": "#8a8580",
+            "bg": "#faf6f1",
+            "panel": "#ffffff",
+            "panel_alt": "#fbf6ef",
+            "line": "#ede5dc",
+            "accent": "#e96b2a",
+            "accent_strong": "#a02e2e",
+            "accent_soft": "#fce6d5",
+            "warn": "#d98f1f",
+            "danger": "#c95746",
+            "shadow": "rgba(31,27,26,.06)",
+            "radius": "14px",
+            "font_display": _system_font("Inter"),
+            "font_body": _system_font("Inter"),
         },
     ),
     "pitch": Theme(
