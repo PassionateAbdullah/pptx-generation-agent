@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -474,13 +475,22 @@ def _make_handler(settings: Settings):
                 "slide_content.md": "text/markdown; charset=utf-8",
                 "sources.md": "text/markdown; charset=utf-8",
                 "slide.md": "text/markdown; charset=utf-8",
+                "layout_report.md": "text/markdown; charset=utf-8",
+                "layout_report.json": "application/json; charset=utf-8",
                 "deck.json": "application/json; charset=utf-8",
+                "audit.json": "application/json; charset=utf-8",
+                "quality.json": "application/json; charset=utf-8",
                 "events.jsonl": "application/x-ndjson; charset=utf-8",
             }
-            if asset not in allowed:
-                self._send_json({"error": "Asset not found."}, status=HTTPStatus.NOT_FOUND)
+            if asset in allowed:
+                self._serve_file(job_dir / asset, allowed[asset])
                 return
-            self._serve_file(job_dir / asset, allowed[asset])
+            # Per-slide HTML: slide-NN.html (zero-padded). Validate the
+            # filename strictly so the resolved path can never escape job_dir.
+            if re.fullmatch(r"slide-\d{2,3}\.html", asset):
+                self._serve_file(job_dir / asset, "text/html; charset=utf-8")
+                return
+            self._send_json({"error": "Asset not found."}, status=HTTPStatus.NOT_FOUND)
 
         def _read_json(self) -> dict:
             length = int(self.headers.get("Content-Length", "0"))
