@@ -6,7 +6,9 @@ from typing import Any, Iterator
 
 from .config import Settings
 from .events import PHASE_CONTENT, PHASE_EXPORT, PHASE_RENDER, PHASE_RESEARCH, domain_of, make_event
-from .html_renderer import render_full_html, render_preview_fragment
+from .deck_audit import audit_deck, render_audit_html
+from .html_renderer import render_full_html, render_preview_fragment, render_single_slide_html
+from .layout_audit import audit_deck_layout, audit_report_markdown
 from .planner import (
     deck_structure_text,
     extract_slide_count,
@@ -33,10 +35,14 @@ def write_deck_artifacts(
     research = research if research is not None else deck.get("research") or {}
     structure = deck_structure_text(deck)
     markdown = slide_content_markdown(deck)
-    html = render_full_html(deck)
+    # Run deck_audit BEFORE render so the HTML can embed the audit panel.
+    audit = audit_deck(deck)
+    html = render_full_html(deck, audit=audit)
     preview_fragment = render_preview_fragment(deck)
     sources_md = _sources_markdown(deck, research)
     slide_md = emit_slide_md(deck)
+    layout_report = audit_deck_layout(deck)
+    layout_report_md = audit_report_markdown(layout_report)
 
     job_dir.mkdir(parents=True, exist_ok=True)
     write_json(job_dir / "deck.json", deck)
@@ -45,6 +51,21 @@ def write_deck_artifacts(
     (job_dir / "slides.html").write_text(html, encoding="utf-8")
     (job_dir / "sources.md").write_text(sources_md, encoding="utf-8")
     (job_dir / "slide.md").write_text(slide_md, encoding="utf-8")
+    write_json(job_dir / "layout_report.json", layout_report)
+    (job_dir / "layout_report.md").write_text(layout_report_md, encoding="utf-8")
+    write_json(job_dir / "audit.json", audit)
+    if isinstance(deck.get("quality"), dict):
+        write_json(job_dir / "quality.json", deck["quality"])
+
+    # Per-slide standalone HTML — viewable directly via
+    # /api/jobs/<id>/slide-NN.html. Files live at the top of job_dir so they
+    # pass the existing 4-part path dispatcher.
+    for slide in deck.get("slides", []):
+        number = int(slide.get("number") or 0)
+        if number <= 0:
+            continue
+        slide_html = render_single_slide_html(deck, slide)
+        (job_dir / f"slide-{number:02d}.html").write_text(slide_html, encoding="utf-8")
 
     return {
         "structure": structure,
@@ -53,6 +74,9 @@ def write_deck_artifacts(
         "html": html,
         "sources_md": sources_md,
         "slide_md": slide_md,
+        "layout_report": layout_report,
+        "layout_report_md": layout_report_md,
+        "audit": audit,
     }
 
 
@@ -100,6 +124,8 @@ def iter_pipeline(
     markdown = artifacts["slide_content"]
     preview_fragment = artifacts["preview_html"]
     sources_md = artifacts["sources_md"]
+    layout_report = artifacts["layout_report"]
+    layout_report_md = artifacts["layout_report_md"]
 
     yield make_event("file", phase=PHASE_RENDER, path="pitch_deck_structure.txt", content=structure)
     yield make_event("file", phase=PHASE_RENDER, path="slide_content.md", content=markdown)
@@ -111,11 +137,31 @@ def iter_pipeline(
     )
     yield make_event("file", phase=PHASE_RENDER, path="sources.md", content=sources_md)
     yield make_event("file", phase=PHASE_RENDER, path="slide.md", content=artifacts["slide_md"])
+    yield make_event("file", phase=PHASE_RENDER, path="layout_report.md", content=layout_report_md)
+    yield make_event("file", phase=PHASE_RENDER, path="layout_report.json", content=layout_report)
     yield make_event(
         "log",
         phase=PHASE_RENDER,
         text="Saved structure, slide notes, and HTML preview.",
     )
+    if layout_report.get("summary", {}).get("critical_count", 0):
+        yield make_event(
+            "log",
+            phase=PHASE_RENDER,
+            text=(
+                "Layout audit found critical alignment risks. "
+                f"See /api/jobs/{job_id}/layout_report.md"
+            ),
+        )
+    else:
+        yield make_event(
+            "log",
+            phase=PHASE_RENDER,
+            text=(
+                "Layout audit passed static checks for overlap/clipping risk and "
+                "HTML/PPTX block-type consistency."
+            ),
+        )
     yield make_event("phase_end", id=PHASE_RENDER)
 
     yield make_event(
@@ -145,6 +191,7 @@ def iter_pipeline(
         structure=structure,
         slide_content=markdown,
         preview_html=preview_fragment,
+        layout_audit=layout_report.get("summary", {}),
         download_url=f"/api/jobs/{job_id}/deck.pptx",
         html_url=f"/api/jobs/{job_id}/slides.html",
     )
@@ -212,6 +259,7 @@ def run_pipeline_and_persist(
         "structure": summary["structure"],
         "slide_content": summary["slide_content"],
         "preview_html": summary["preview_html"],
+        "layout_audit": summary.get("layout_audit", {}),
         "download_url": summary["download_url"],
         "html_url": summary["html_url"],
     }
