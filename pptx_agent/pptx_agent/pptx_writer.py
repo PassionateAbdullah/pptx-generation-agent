@@ -10,6 +10,8 @@ matches the HTML preview.
 from __future__ import annotations
 
 import html
+import logging
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,8 @@ from typing import Any
 from .blocks import slide_to_blocks
 from .images import guess_mime, resolve_local_image
 from .themes import DEFAULT_THEME, get_theme
+
+log = logging.getLogger("pptx_agent.pptx_writer")
 
 SLIDE_W = 12192000
 SLIDE_H = 6858000
@@ -114,13 +118,21 @@ class PptxWriter:
             blocks = slide_to_blocks(slide)
 
         cursor_y = CONTENT_Y_START
+        dropped = 0
         for block in blocks:
             if cursor_y >= CONTENT_Y_END:
-                break
+                dropped += 1
+                continue
             available = CONTENT_Y_END - cursor_y
             block_shapes, used = self._render_block(block, CONTENT_X, cursor_y, CONTENT_W, available, theme)
             shapes.extend(block_shapes)
             cursor_y += used + BLOCK_GAP
+        if dropped:
+            log.warning(
+                "slide %s overflowed: %d block(s) dropped (total %d, layout=%s). "
+                "Consider splitting the slide or reducing block content.",
+                slide.get("number"), dropped, len(blocks), slide.get("layout"),
+            )
 
         shapes_xml = "\n".join(shapes)
         return (
@@ -182,7 +194,100 @@ class PptxWriter:
             return self._render_hero_stat(props, x, y, w, tokens)
         if type_ == "highlight":
             return self._render_highlight(props, x, y, w, tokens)
+        if type_ == "table":
+            return self._render_table(props, x, y, w, max_h, tokens)
         return [], 0
+
+    def _render_table(self, props, x, y, w, max_h, tokens) -> tuple[list[str], int]:
+        headers = [str(h) for h in (props.get("headers") or [])]
+        rows = [r for r in (props.get("rows") or []) if isinstance(r, list)]
+        caption = str(props.get("caption") or "")
+        if not headers and not rows:
+            return [], 0
+        # Layout: caption (optional) + native PPTX table.
+        shapes: list[str] = []
+        cur_y = y
+        if caption:
+            shapes.append(
+                self._text(x, cur_y, w, 240000, caption.upper(),
+                           size=900, color=_hex(tokens["muted"]), bold=True, name="TableCaption")
+            )
+            cur_y += 280000
+        col_count = max(len(headers), max((len(r) for r in rows), default=0))
+        if col_count == 0:
+            return shapes, cur_y - y
+        col_w = w // col_count
+        row_h = 360000
+        header_h = 360000 if headers else 0
+        body_h = row_h * len(rows)
+        table_h = header_h + body_h
+        if cur_y + table_h > y + max_h:
+            # Clip rows to fit.
+            available_rows = max(0, (y + max_h - cur_y - header_h) // row_h)
+            rows = rows[:available_rows]
+            body_h = row_h * len(rows)
+            table_h = header_h + body_h
+        shapes.append(
+            self._table_shape(
+                x, cur_y, w, table_h,
+                col_w=col_w, col_count=col_count,
+                headers=headers, rows=rows,
+                row_h=row_h, header_h=header_h,
+                accent=_hex(tokens["accent"]),
+                accent_soft=_hex(tokens["accent_soft"]),
+                ink=_hex(tokens["ink"]),
+                line=_hex(tokens["line"]),
+                muted=_hex(tokens["muted"]),
+            )
+        )
+        return shapes, (cur_y - y) + table_h
+
+    def _table_shape(
+        self, x: int, y: int, w: int, h: int, *,
+        col_w: int, col_count: int,
+        headers: list[str], rows: list[list[str]],
+        row_h: int, header_h: int,
+        accent: str, accent_soft: str, ink: str, line: str, muted: str,
+    ) -> str:
+        sid = self._next_id()
+        # Build <a:tbl> grid.
+        grid_cols = "".join(f'<a:gridCol w="{col_w}"/>' for _ in range(col_count))
+        tr_lines: list[str] = []
+        if headers:
+            tr_lines.append(self._tr(headers, height=header_h, col_count=col_count,
+                                     fill=accent_soft, color=accent, bold=True, size=950, line=line))
+        for r in rows:
+            padded = list(r) + [""] * (col_count - len(r))
+            tr_lines.append(self._tr(padded[:col_count], height=row_h, col_count=col_count,
+                                     fill="", color=ink, bold=False, size=950, line=line))
+        return (
+            f'<p:graphicFrame><p:nvGraphicFramePr>'
+            f'<p:cNvPr id="{sid}" name="Table {sid}"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/>'
+            f'</p:nvGraphicFramePr>'
+            f'<p:xfrm><a:off x="{int(x)}" y="{int(y)}"/><a:ext cx="{int(w)}" cy="{int(h)}"/></p:xfrm>'
+            f'<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">'
+            f'<a:tbl><a:tblPr firstRow="1"><a:tableStyleId>{{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}}</a:tableStyleId></a:tblPr>'
+            f'<a:tblGrid>{grid_cols}</a:tblGrid>'
+            f'{"".join(tr_lines)}'
+            f'</a:tbl></a:graphicData></a:graphic></p:graphicFrame>'
+        )
+
+    def _tr(self, cells: list[str], *, height: int, col_count: int, fill: str,
+            color: str, bold: bool, size: int, line: str) -> str:
+        bold_attr = ' b="1"' if bold else ""
+        fill_xml = f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>' if fill else '<a:noFill/>'
+        border = f'<a:lnB w="6350"><a:solidFill><a:srgbClr val="{line}"/></a:solidFill></a:lnB>'
+        tc_xml: list[str] = []
+        for cell in cells[:col_count]:
+            safe = html.escape(str(cell), quote=False)
+            tc_xml.append(
+                f'<a:tc><a:txBody><a:bodyPr wrap="square" anchor="ctr"/><a:lstStyle/>'
+                f'<a:p><a:r><a:rPr lang="en-US" sz="{size}"{bold_attr}>'
+                f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>'
+                f'<a:latin typeface="Aptos"/></a:rPr><a:t>{safe}</a:t></a:r></a:p>'
+                f'</a:txBody><a:tcPr>{border}{fill_xml}</a:tcPr></a:tc>'
+            )
+        return f'<a:tr h="{height}">{"".join(tc_xml)}</a:tr>'
 
     def _render_hero_stat(self, props, x, y, w, tokens) -> tuple[list[str], int]:
         value = str(props.get("value") or "")
