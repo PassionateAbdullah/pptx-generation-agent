@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+
+log = logging.getLogger("pptx_agent.research")
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
@@ -183,6 +186,25 @@ class Researcher:
                     phase=PHASE_RESEARCH,
                     text=f"Fetched source text excerpts for {enriched_count} top source(s).",
                 )
+
+        # Relevance + trust filter: drop off-topic low-trust sources before
+        # they pollute the slide author's context. High-trust domains pass
+        # even with low overlap (they may carry data the topic-tokens miss).
+        from .intake import filter_sources as _filter_sources  # local import: avoid cycle
+        kept, rejected = _filter_sources(deduped, topic, prompt, min_score=0.05)
+        if rejected:
+            yield make_event(
+                "log", phase=PHASE_RESEARCH,
+                text=f"Filtered {len(rejected)} off-topic source(s); kept {len(kept)}.",
+            )
+            for r in rejected:
+                yield make_event(
+                    "source_rejected", phase=PHASE_RESEARCH,
+                    title=r.get("title", ""), url=r.get("url", ""),
+                    reason=r.get("reason", ""), score=r.get("score", 0.0),
+                    trust=r.get("trust", "unknown"),
+                )
+        deduped = kept
 
         for index, item in enumerate(deduped, start=1):
             item.source_id = f"S{index}"
@@ -527,12 +549,31 @@ class Researcher:
         return insights[:8]
 
     def _enrich_sources(self, sources: list[SearchResult]) -> int:
+        """Fetch real body text for each source in parallel.
+
+        Without this pass downstream slide authoring runs on 100-200 char
+        SearXNG snippets — too short for the claim miner to find concrete
+        numbers, so charts/tables can't ground. Widened from 6 to all
+        sources; parallel pool keeps wall-clock ~equivalent.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        targets = list(sources)
+        if not targets:
+            return 0
         enriched = 0
-        for source in sources[:6]:
-            excerpt = self._fetch_source_excerpt(source.url)
-            if excerpt:
-                source.excerpt = excerpt
-                enriched += 1
+        with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
+            futs = {pool.submit(self._fetch_source_excerpt, s.url): s for s in targets}
+            for fut in as_completed(futs):
+                src = futs[fut]
+                try:
+                    excerpt = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("enrich worker failed for %s: %s", src.url, exc)
+                    continue
+                if excerpt:
+                    src.excerpt = excerpt
+                    enriched += 1
         return enriched
 
     def _fetch_source_excerpt(self, url: str) -> str:
@@ -541,21 +582,33 @@ class Researcher:
         lower_url = url.lower().split("?", 1)[0]
         if lower_url.endswith((".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx", ".zip")):
             return ""
+        # Use a realistic User-Agent — many sites 403 anything that looks
+        # like a bot. Without this the enrichment pass drops most sources,
+        # which starves downstream slide authoring of source body text.
         request = urllib.request.Request(
             url,
             headers={
-                "Accept": "text/html,text/plain;q=0.9,*/*;q=0.1",
-                "User-Agent": "ManusPptxAgent/0.1",
+                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+                "Accept-Language": "en-US,en;q=0.9",
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+                ),
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with urllib.request.urlopen(request, timeout=10) as response:
                 content_type = response.headers.get("Content-Type", "")
                 if "text/html" not in content_type and "text/plain" not in content_type:
+                    log.info("excerpt skipped (mime=%s): %s", content_type, url)
                     return ""
                 charset = response.headers.get_content_charset() or "utf-8"
                 raw = response.read(self.settings.max_source_chars * 8)
-        except Exception:
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            log.warning("excerpt fetch failed %s: %s", url, exc)
+            return ""
+        except Exception as exc:  # noqa: BLE001
+            log.warning("excerpt fetch unexpected error %s: %s", url, exc)
             return ""
 
         text = raw.decode(charset, errors="replace")
