@@ -95,6 +95,106 @@ def extract_numeric_series(texts: Iterable[str], max_points: int = 6) -> list[tu
     return pairs
 
 
+_ENTITY_VALUE_RE = re.compile(
+    r"([A-Z][A-Za-z][A-Za-z\s&/-]{1,30}?)\s*[:\-—]\s*"
+    r"(\$?\s?\d{1,4}(?:[,\d]*\.?\d*)?\s*(?:%|m|bn|million|billion|thousand|k)?)",
+    re.IGNORECASE,
+)
+_ATTRIBUTE_HEADER_HINTS = (
+    ("%", "Share"),
+    ("$", "Value"),
+    ("m", "Value (M)"),
+    ("bn", "Value (B)"),
+    ("billion", "Value (B)"),
+    ("million", "Value (M)"),
+    ("thousand", "Value (K)"),
+    ("k", "Value (K)"),
+)
+
+
+def _attribute_label_for(unit: str) -> str:
+    u = unit.lower()
+    for needle, label in _ATTRIBUTE_HEADER_HINTS:
+        if needle in u:
+            return label
+    return "Value"
+
+
+def extract_table_from_research(
+    research: dict[str, Any],
+    max_rows: int = 5,
+    min_rows: int = 3,
+) -> dict[str, Any] | None:
+    """Pull an entity-x-value table out of research excerpts.
+
+    Looks for sentences whose entities are followed by numbers — patterns like
+    ``"Public: 60%, NGO: 15%, Private: 25%"`` — and packs the matched pairs
+    into a 2-column table. Returns ``None`` if fewer than ``min_rows`` distinct
+    entity rows can be found.
+    """
+    texts: list[str] = []
+    for insight in research.get("insights", []) or []:
+        if isinstance(insight, str):
+            texts.append(insight)
+    for source in research.get("sources", []) or []:
+        if not isinstance(source, dict):
+            continue
+        for key in ("excerpt", "snippet"):
+            val = source.get(key)
+            if isinstance(val, str):
+                texts.append(val)
+
+    rows: list[list[str]] = []
+    seen_entities: set[str] = set()
+    units_seen: list[str] = []
+    for text in texts:
+        for sentence in re.split(r"(?<=[.!?])\s+|;\s+", text):
+            if len(sentence) < 12:
+                continue
+            matches = list(_ENTITY_VALUE_RE.finditer(sentence))
+            if len(matches) < 2:
+                continue
+            for m in matches:
+                entity = re.sub(r"\s+", " ", m.group(1).strip(" :-—"))
+                value = re.sub(r"\s+", " ", m.group(2).strip())
+                if len(entity) < 3 or entity.lower() in seen_entities:
+                    continue
+                if not re.search(r"\d", value):
+                    continue
+                seen_entities.add(entity.lower())
+                rows.append([entity[:32], value[:24]])
+                units_seen.append(value)
+                if len(rows) >= max_rows:
+                    break
+            if len(rows) >= max_rows:
+                break
+        if len(rows) >= max_rows:
+            break
+
+    if len(rows) < min_rows:
+        return None
+    attribute_label = _attribute_label_for(" ".join(units_seen))
+    return {
+        "headers": ["Item", attribute_label],
+        "rows": rows,
+    }
+
+
+def table_block_from_research(slide_number: int, research: dict[str, Any]) -> dict[str, Any] | None:
+    table = extract_table_from_research(research)
+    if not table:
+        return None
+    return {
+        "id": f"s{slide_number}-bX-table",
+        "type": "table",
+        "props": {
+            "headers": table["headers"],
+            "rows": table["rows"],
+            "caption": "From research excerpts",
+        },
+    }
+
+
 def chart_block_from_research(slide_number: int, research: dict[str, Any], kind: str = "bar") -> dict[str, Any] | None:
     """Build a chart block from research data if we can extract ≥3 numeric
     points; otherwise return None so the slide can pick a different recipe."""
