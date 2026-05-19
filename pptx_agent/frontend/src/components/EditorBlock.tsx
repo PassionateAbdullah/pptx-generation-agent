@@ -188,6 +188,29 @@ function BlockContent({ block, onChange, jobId }: { block: SlideBlock; onChange:
       return <div className="flow"><b>{String(props.kind || "flow")}</b></div>;
     case "spacer":
       return <div className={`spacer spacer-${String(props.size || "md")}`} />;
+    case "table": {
+      const headers = (props.headers as string[]) || [];
+      const rows = (props.rows as string[][]) || [];
+      return (
+        <div className="block-table-edit">
+          <table className="data-table">
+            {headers.length > 0 && (
+              <thead>
+                <tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr>
+              </thead>
+            )}
+            {rows.length > 0 && (
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>
+                ))}
+              </tbody>
+            )}
+          </table>
+          <p className="muted small">Edit table via slide.md or regenerate w/ instructions.</p>
+        </div>
+      );
+    }
     case "hero_stat":
       return (
         <div className="hero-stat">
