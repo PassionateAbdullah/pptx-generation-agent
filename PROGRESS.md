@@ -46,6 +46,7 @@ Original 8-step plan was MVP parity. Real Manus parity needs 13. Beyond Manus = 
 | 8.5 | Dynamic outline from research (topic family + claim miner + hedge filter + slide.md) | ✅ done |
 | 12 | Slide regenerate + conversational refinement chat | ✅ done |
 | 12.5 | Visual gap fill: hero_stat + highlight blocks, per-slide accent rotation, DeckView (all slides stacked) | ✅ done |
+| 12.6 | UX fixes: auto-switch one-shot, minimal cover, agenda slide page-2, more highlights | ✅ done |
 | 13 | PDF export + shareable read-only links | ⏳ pending |
 | — | **— Manus parity line reached at phase 13 —** | |
 | 14 | Citation grading + auto-factcheck per claim | ⏳ pending |
@@ -54,6 +55,60 @@ Original 8-step plan was MVP parity. Real Manus parity needs 13. Beyond Manus = 
 | 17 | Live data binding (slide auto-refresh on new sources) | ⏳ pending |
 
 ---
+
+### 2026-05-18 — Step 12.6 done: UX bugfix + hero-agnostic cover + agenda + visual variety
+
+Tight follow-up to 12.5 after live user testing surfaced:
+
+**Bug fixed — auto-switch hijack** ([App.tsx](pptx_agent/frontend/src/App.tsx))
+- Phase 12.5 added `useEffect` that flipped `selected` to `{kind: "deck"}` whenever `stream.status === "done"` AND `selected.kind` was not deck/slide.
+- Side effect: clicking a Research / Plan / Content card on the left rail set `selected.kind = "phase"` → effect re-fired → snapped back to DeckView.
+- Fix: `announcedJobRef = useRef<string | null>(null)`. Effect now compares `announcedJobRef.current` to `job.jobId` and runs once per job. User clicks on phases work again.
+
+**Hero-agnostic cover** ([dynamic_outline.py](pptx_agent/pptx_agent/dynamic_outline.py))
+- Cover used to emit `hero_stat + metric_row` from research claims. Felt content-y for a cover.
+- Cover now ships **just** eyebrow + heading + optional small subheading (dropped when subtitle > 80 chars). No bullets, no charts, no claims.
+- `topic_families.py` covers updated to `max_claims=0` to match.
+
+**Agenda slide added** ([topic_families.py](pptx_agent/pptx_agent/topic_families.py))
+- New `agenda` role inserted right after `cover` in all 5 families (pitch / briefing / market / case_study / product).
+- Layout `roadmap`, eyebrow "Agenda", `required=False` so short decks (<3 slides) skip it.
+- Pass-2 in `build_outline` fills agenda bullets with the eyebrows/titles of subsequent non-closing slides (up to 6).
+- Result: page 2 of a deck now reads "Briefing agenda — Findings · Context · Drivers · Opportunity · Risks · Recommendations" matching expected pure-presentation structure.
+
+**Title hijack guard** ([dynamic_outline.py](pptx_agent/pptx_agent/dynamic_outline.py))
+- Scaffold roles (cover, agenda, closing) now ALWAYS use the family's `title_template`. Previously a claim-rich research dict could hijack cover/agenda titles with a random `$8.5B` quote.
+- Content roles continue to pull research-anchored titles when claims exist.
+
+**More highlight variety** ([dynamic_outline.py](pptx_agent/pptx_agent/dynamic_outline.py))
+- Comparison/risk slides: if no `vs` head-to-head bullet exists, promote the strongest claim into an `accent`-toned highlight at the top of the slide.
+- Drivers/Opportunity/Lessons: top bullet now becomes a `highlight` (success-toned for opportunity, accent-toned for drivers/lessons) instead of plain `callout`.
+- Net effect: most non-cover slides now ship a coloured block somewhere, not just bullets.
+
+**Smoke (8-slide research briefing on AI/education with concrete research):**
+
+```
+S1 (cover    / Research Briefing): eyebrow, heading, subheading
+   title: Impact of AI on education                              # ← clean cover
+S2 (roadmap  / Agenda           ): eyebrow, heading, subheading, bullets
+   title: Briefing agenda
+   bullets: Findings · Context · Drivers · Opportunity · Risks   # ← agenda
+S3 (market   / Context          ): heading + bullets + paragraph
+   title: Student engagement improved by 22% in pilot schools   # ← claim-anchored
+   cited bullet: ... [S2]
+S5 (solution / Drivers          ): + highlight + bullets         # ← coloured highlight
+S6 (solution / Opportunity      ): + success-tone highlight
+S7 (comparison / Risks          ): + accent highlight + matrix
+S8 (ask      / Recommendations  ): + callout + bullets
+```
+
+Cover stays clean. Agenda lists actual slide sections. Content slides carry inline citations + at least one coloured block.
+
+**Tests** — `python3 -m unittest tests.test_pipeline` → **22/22 pass**. Frontend build: 54 modules, 206 KB JS / 63 KB gz, 31 KB CSS.
+
+**Remaining user-flagged gaps** (deferred / out of phase 12.6 scope):
+- Charts auto-emitted only when research has ≥3 numeric points; still hit-or-miss for vague prompts. Would need stricter `prefer_chart` rules or LLM-driven data generation.
+- Table block (real grid) not implemented; metric_row + diagram(matrix) cover the cases for now.
 
 ### 2026-05-18 — Step 12.5 done: hero stats + colorful highlights + per-slide accent variants + all-slides DeckView
 
