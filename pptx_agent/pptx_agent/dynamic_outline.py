@@ -40,6 +40,7 @@ from .dynamic_blocks import (
     _quote,
     _subheading,
     chart_block_from_research,
+    table_block_from_research,
 )
 from .hedge_filter import assertive, scrub_bullets, scrub_paragraph
 from .topic_families import (
@@ -288,16 +289,19 @@ def _blocks_for_role(
         chart_block = chart_block_from_research(number, research, kind="bar")
 
     if role.role == "cover":
-        # Cover always gets a giant hero stat if any metric is pithy, else big paragraph.
-        if metrics and _is_hero_worthy(metrics[0]):
-            sid = citations[0] if citations else ""
-            blocks.append(_hero_stat_block(number, metrics[0], source_id=sid))
-            if len(metrics) > 1:
-                blocks.append(_metric_row(number, len(blocks) + 1, metrics[1:]))
-        elif metrics:
-            blocks.append(_metric_row(number, len(blocks) + 1, metrics))
-        else:
-            blocks.append(_paragraph(number, len(blocks) + 1, subtitle or title))
+        # Cover is hero-agnostic: topic + tagline only. No bullets, no chart,
+        # no paragraph. Optional small tagline via subheading if subtitle short.
+        # The eyebrow + heading were already appended above; we strip the
+        # subheading the standard block builder added so the cover stays
+        # uncluttered.
+        if subtitle and len(subtitle) > 80:
+            # Drop the auto-appended subheading on covers when it grew long.
+            blocks = [b for b in blocks if b.get("type") != "subheading"]
+    elif role.role == "agenda":
+        # Agenda placeholder. The outline builder fills `agenda_items` after
+        # all subsequent slide titles are known (see build_outline pass-2).
+        items = list(role.theme_keywords) or ["Section 1", "Section 2", "Section 3"]
+        blocks.append(_bullets_block(number, len(blocks) + 1, items))
     elif role.role in {"problem", "challenge"}:
         if bullets:
             blocks.append(_callout(number, len(blocks) + 1, bullets[0], tone="warn"))
@@ -325,6 +329,10 @@ def _blocks_for_role(
         if chart_block:
             blocks.append(chart_block)
             chart_block = None
+        else:
+            t = table_block_from_research(number, research)
+            if t:
+                blocks.append(t)
         if bullets:
             blocks.append(_bullets_block(number, len(blocks) + 1, bullets))
     elif role.role in {"competition", "differentiation", "comparison", "segments", "risks"}:
@@ -337,7 +345,20 @@ def _blocks_for_role(
                 "props": {"tone": "warn", "title": "Head-to-head", "text": bullets[h2h_idx]},
             })
             bullets = [b for i, b in enumerate(bullets) if i != h2h_idx]
-        blocks.append(_diagram(number, len(blocks) + 1, "matrix", bullets[:6] or ["Alt 1", "Alt 2"]))
+        # Otherwise promote the strongest claim as an accent highlight so the
+        # slide always has at least one bold visual element, not just a matrix.
+        elif bullets:
+            blocks.append({
+                "id": f"s{number}-bHi-highlight",
+                "type": "highlight",
+                "props": {"tone": "accent", "title": role.eyebrow.upper() if role.eyebrow else "KEY POINT", "text": bullets[0]},
+            })
+            bullets = bullets[1:]
+        table_block = table_block_from_research(number, research)
+        if table_block:
+            blocks.append(table_block)
+        else:
+            blocks.append(_diagram(number, len(blocks) + 1, "matrix", bullets[:6] or ["Alt 1", "Alt 2"]))
         if bullets:
             blocks.append(_bullets_block(number, len(blocks) + 1, bullets))
     elif role.role in {"business_model", "model"}:
@@ -356,6 +377,10 @@ def _blocks_for_role(
         if chart_block:
             blocks.append(chart_block)
             chart_block = None
+        else:
+            t = table_block_from_research(number, research)
+            if t:
+                blocks.append(t)
         if bullets:
             blocks.append(_bullets_block(number, len(blocks) + 1, bullets))
     elif role.role in {"team", "stakeholders", "players", "customer"}:
@@ -376,7 +401,12 @@ def _blocks_for_role(
         blocks.append(_quote(number, len(blocks) + 1, subtitle or title, attribution=""))
     elif role.role in {"drivers", "opportunity", "lessons"}:
         if bullets:
-            blocks.append(_callout(number, len(blocks) + 1, bullets[0], tone="info"))
+            tone = "success" if role.role == "opportunity" else "accent"
+            blocks.append({
+                "id": f"s{number}-bHi-highlight",
+                "type": "highlight",
+                "props": {"tone": tone, "title": role.eyebrow.upper() if role.eyebrow else "KEY", "text": bullets[0]},
+            })
             if len(bullets) > 1:
                 blocks.append(_bullets_block(number, len(blocks) + 1, bullets[1:]))
         else:
@@ -453,11 +483,13 @@ def build_outline(
             continue
 
         number = len(slides) + 1
-        title = (
-            _title_from_claim(themed[0], role, topic_label, prompt)
-            if themed
-            else fill_title_template(role.title_template, topic_label, prompt)
-        )
+        # Scaffold roles (cover, agenda, closing) keep their template title —
+        # never let claim miner hijack the cover or agenda heading. Only
+        # content-bearing roles use research claims as titles.
+        if role.role in {"cover", "agenda", "closing"} or not themed:
+            title = fill_title_template(role.title_template, topic_label, prompt)
+        else:
+            title = _title_from_claim(themed[0], role, topic_label, prompt)
         subtitle = _build_subtitle(themed, topic_label, fallback="")
         if role.role == "cover":
             subtitle = subtitle or _deck_subtitle(topic_label, family)
@@ -497,6 +529,40 @@ def build_outline(
             citations=citations,
         )
         slides.append(slide_dict)
+
+    # Pass-2: fill agenda slide bullets with downstream slide titles.
+    for i, s in enumerate(slides):
+        if s.get("eyebrow", "").lower() != "agenda":
+            continue
+        following = [
+            ss for ss in slides[i + 1:]
+            if ss.get("eyebrow", "").lower() != "agenda"
+            and ss.get("layout") != "closing"
+        ][:6]
+        agenda_items = [ss.get("eyebrow") or ss.get("title", "Section") for ss in following]
+        if agenda_items:
+            s["bullets"] = agenda_items
+            # Rebuild this slide's blocks now that bullets are known.
+            new_role = SlideRole(
+                role="agenda",
+                layout=s["layout"],
+                title_template="",
+                theme_keywords=agenda_items,
+                eyebrow=s.get("eyebrow", "Agenda"),
+                min_claims=0,
+                max_claims=len(agenda_items),
+                required=False,
+            )
+            s["blocks"] = _blocks_for_role(
+                new_role,
+                number=s["number"],
+                title=s["title"],
+                subtitle=s.get("subtitle", ""),
+                bullets=agenda_items,
+                metrics=[],
+                research=research,
+                citations=[],
+            )
 
     # Pad with appendix-style slides if we haven't reached slide_count.
     # Use the family's optional roles a second time if any were skipped, then
@@ -596,3 +662,29 @@ def _deck_audience(family: TopicFamily) -> str:
     if family.name == "product_overview":
         return "Users, partners, and prospects"
     return "Stakeholders"
+
+
+# ---------------------------------------------------------------------------
+# Public composer surface — consumed by regen.py for single-slide rebuilds.
+# Kept as explicit aliases so the leading-underscore helpers remain private
+# implementation details while regen still has a stable import target.
+# ---------------------------------------------------------------------------
+
+build_subtitle = _build_subtitle
+claims_to_bullets = _claims_to_bullets
+blocks_for_role = _blocks_for_role
+fallback_bullets_for_role = _fallback_bullets_for_role
+metrics_from_claims = _metrics_from_claims
+title_from_claim = _title_from_claim
+ROLE_FALLBACK_BULLETS = _ROLE_FALLBACK_BULLETS
+
+__all__ = [
+    "build_outline",
+    "build_subtitle",
+    "claims_to_bullets",
+    "blocks_for_role",
+    "fallback_bullets_for_role",
+    "metrics_from_claims",
+    "title_from_claim",
+    "ROLE_FALLBACK_BULLETS",
+]
