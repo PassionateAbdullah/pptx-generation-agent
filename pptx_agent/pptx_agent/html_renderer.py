@@ -13,8 +13,11 @@ def render_preview_fragment(deck: dict) -> str:
     return f'<section class="deck-stage" aria-label="Slide preview">{slides}</section>'
 
 
-def render_full_html(deck: dict) -> str:
+def render_full_html(deck: dict, audit: dict | None = None) -> str:
+    from .deck_audit import audit_panel_css, render_audit_html  # local import to avoid circular dep
     theme = get_theme(deck.get("theme"))
+    audit_html = render_audit_html(audit) if audit else ""
+    audit_css = audit_panel_css() if audit_html else ""
     return f"""<!doctype html>
 <html lang="en" data-theme="{escape_html(theme.name)}" data-theme-mode="{escape_html(theme.mode)}">
 <head>
@@ -22,6 +25,7 @@ def render_full_html(deck: dict) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escape_html(deck["title"])}</title>
   <style>{_standalone_css()}</style>
+  <style>{audit_css}</style>
 </head>
 <body>
   <main>
@@ -30,6 +34,41 @@ def render_full_html(deck: dict) -> str:
       <h1>{escape_html(deck["title"])}</h1>
     </header>
     {render_preview_fragment(deck)}
+    {audit_html}
+  </main>
+</body>
+</html>
+"""
+
+
+def render_single_slide_html(deck: dict, slide: dict[str, Any]) -> str:
+    """Return a standalone HTML document for one slide.
+
+    The document carries the deck-level theme + stylesheet so a slide-<n>.html
+    file renders identically whether opened directly, iframed inside the
+    SlideDrawer, or exported. Body has ``data-slide="<n>"`` so callers can
+    introspect.
+    """
+    theme = get_theme(deck.get("theme"))
+    return f"""<!doctype html>
+<html lang="en" data-theme="{escape_html(theme.name)}" data-theme-mode="{escape_html(theme.mode)}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape_html(deck.get("title", ""))} — Slide {slide.get("number", "")}</title>
+  <style>{_standalone_css()}</style>
+  <style>
+    body {{ background: var(--bg); padding: 24px; }}
+    main {{ max-width: 1100px; margin: 0 auto; }}
+    .deck-stage {{ display: block; }}
+    .slide {{ aspect-ratio: 16 / 9; }}
+  </style>
+</head>
+<body data-slide="{slide.get("number", "")}">
+  <main>
+    <section class="deck-stage" aria-label="Slide preview">
+      {_render_slide(slide)}
+    </section>
   </main>
 </body>
 </html>
@@ -209,6 +248,26 @@ def _render_highlight(props: dict[str, Any]) -> str:
     )
 
 
+def _render_table(props: dict[str, Any]) -> str:
+    headers = [escape_html(str(h)) for h in (props.get("headers") or [])]
+    rows = props.get("rows") or []
+    caption = escape_html(str(props.get("caption") or ""))
+    if not headers and not rows:
+        return '<div class="block-table-empty">[empty table]</div>'
+    head_html = ""
+    if headers:
+        head_html = "<thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead>"
+    body_rows = []
+    for r in rows:
+        if not isinstance(r, list):
+            continue
+        cells = "".join(f"<td>{escape_html(str(c))}</td>" for c in r)
+        body_rows.append(f"<tr>{cells}</tr>")
+    body_html = f'<tbody>{"".join(body_rows)}</tbody>' if body_rows else ""
+    caption_html = f"<caption>{caption}</caption>" if caption else ""
+    return f'<table class="data-table">{caption_html}{head_html}{body_html}</table>'
+
+
 def _render_spacer(props: dict[str, Any]) -> str:
     size = escape_html(str(props.get("size") or "md"))
     return f'<div class="spacer spacer-{size}" aria-hidden="true"></div>'
@@ -233,6 +292,7 @@ _BLOCK_RENDERERS = {
     "spacer": _render_spacer,
     "hero_stat": _render_hero_stat,
     "highlight": _render_highlight,
+    "table": _render_table,
 }
 
 
@@ -255,20 +315,26 @@ main {{ width: min(1180px, calc(100% - 32px)); margin: 28px auto; }}
 .block-heading h2 {{ margin: 0; font-size: 38px; line-height: 1.04; max-width: 24ch; font-family: var(--font-display); }}
 .block-heading h3 {{ margin: 0; font-size: 26px; line-height: 1.1; font-family: var(--font-display); }}
 .block-subheading .subtitle {{ color: var(--muted); font-size: 17px; line-height: 1.45; max-width: 70ch; margin: 0; }}
-.block-paragraph p {{ margin: 0; color: var(--ink); opacity: .88; font-size: 15px; line-height: 1.5; max-width: 70ch; }}
-.block-bullets ul {{ margin: 0; padding-left: 20px; color: var(--ink); font-size: 16px; line-height: 1.42; }}
-.block-bullets li + li {{ margin-top: 8px; }}
-.block-bullets li::marker {{ color: var(--accent); }}
-.block-metric_row .metric-row {{ display: flex; gap: 12px; flex-wrap: wrap; }}
-.metric {{ min-width: 130px; border: 1px solid var(--line); border-radius: calc(var(--radius) * .8); padding: 10px 12px; background: var(--panel-alt); }}
-.metric strong {{ display: block; font-size: 22px; color: var(--accent); font-family: var(--font-display); }}
-.metric span {{ display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 800; }}
-.block-quote blockquote {{ margin: 0; padding: 16px 18px; border-left: 4px solid var(--accent); background: var(--panel-alt); color: var(--ink); font-style: italic; }}
-.block-quote cite {{ display: block; margin-top: 8px; color: var(--muted); font-style: normal; font-size: 13px; }}
-.callout {{ padding: 12px 14px; border-radius: calc(var(--radius) * .8); border: 1px solid var(--line); background: var(--panel-alt); color: var(--ink); }}
+.block-paragraph p {{ margin: 0; color: var(--ink); opacity: .94; font-size: 15px; line-height: 1.55; max-width: 72ch; padding: 12px 14px; background: var(--panel-alt); border-left: 3px solid var(--accent); border-radius: 4px; }}
+.block-bullets ul {{ margin: 0; padding: 0; color: var(--ink); font-size: 15px; line-height: 1.4; list-style: none; display: grid; gap: 8px; }}
+.block-bullets li {{ position: relative; padding: 10px 12px 10px 36px; background: var(--panel-alt); border: 1px solid var(--line); border-radius: calc(var(--radius) * .7); }}
+.block-bullets li::before {{ content: "▸"; position: absolute; left: 14px; top: 10px; color: var(--accent); font-weight: 900; }}
+.block-bullets li::marker {{ content: ""; }}
+.block-metric_row .metric-row {{ display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }}
+.metric {{ position: relative; border: 1px solid var(--line); border-radius: calc(var(--radius) * .8); padding: 14px 16px; background: linear-gradient(180deg, var(--panel) 0%, var(--panel-alt) 100%); box-shadow: 0 2px 8px var(--shadow); }}
+.metric::before {{ content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; background: var(--accent); border-radius: 0 2px 2px 0; }}
+.metric strong {{ display: block; font-size: 28px; color: var(--accent); font-family: var(--font-display); font-weight: 800; line-height: 1.05; }}
+.metric span {{ display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 800; letter-spacing: 0.06em; margin-top: 4px; }}
+.block-quote blockquote {{ margin: 0; padding: 18px 20px; border-left: 4px solid var(--accent); background: var(--panel-alt); color: var(--ink); font-style: italic; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); position: relative; }}
+.block-quote blockquote::before {{ content: "\\201C"; position: absolute; top: -6px; left: 12px; font-size: 48px; color: var(--accent); opacity: 0.35; font-family: serif; line-height: 1; }}
+.block-quote cite {{ display: block; margin-top: 10px; color: var(--muted); font-style: normal; font-size: 13px; }}
+.callout {{ padding: 14px 16px; border-radius: calc(var(--radius) * .8); border: 1px solid var(--line); background: var(--panel-alt); color: var(--ink); display: flex; align-items: flex-start; gap: 10px; box-shadow: 0 2px 8px var(--shadow); }}
+.callout::before {{ content: "ⓘ"; color: var(--accent); font-weight: 900; font-size: 18px; line-height: 1.2; flex-shrink: 0; }}
 .callout-info {{ border-color: var(--accent); background: var(--accent-soft); }}
-.callout-warn {{ border-color: var(--warn); background: var(--panel-alt); }}
+.callout-warn {{ border-color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, var(--panel)); }}
+.callout-warn::before {{ content: "⚠"; color: var(--warn); }}
 .callout-success {{ border-color: var(--accent); background: var(--accent-soft); }}
+.callout-success::before {{ content: "✓"; color: var(--accent); }}
 .block-image figure {{ margin: 0; }}
 .block-image img {{ width: 100%; max-height: 320px; border-radius: calc(var(--radius) * .8); display: block; }}
 .block-image figcaption {{ color: var(--muted); font-size: 12px; margin-top: 6px; }}
@@ -284,8 +350,9 @@ main {{ width: min(1180px, calc(100% - 32px)); margin: 28px auto; }}
 .matrix {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
 .matrix span {{ border: 1px solid var(--line); border-radius: calc(var(--radius) * .8); padding: 14px; background: var(--panel-alt); color: var(--ink); font-weight: 800; }}
 .flow {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
-.flow b {{ padding: 12px 14px; border-radius: calc(var(--radius) * .8); background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line); }}
-.flow i {{ width: 20px; height: 2px; background: var(--warn); }}
+.flow b {{ padding: 12px 16px; border-radius: calc(var(--radius) * .8); background: var(--accent-soft); color: var(--accent-strong, var(--accent)); border: 1px solid var(--accent); font-weight: 800; box-shadow: 0 2px 6px var(--shadow); }}
+.flow i {{ width: 22px; height: 2px; background: var(--accent); position: relative; }}
+.flow i::after {{ content: ""; position: absolute; right: -2px; top: -3px; width: 0; height: 0; border-left: 6px solid var(--accent); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }}
 .visual-orbit {{ width: 220px; height: 220px; border: 1px solid var(--line); border-radius: 50%; position: relative; background: radial-gradient(circle, var(--accent-soft), transparent 58%); align-self: center; }}
 .visual-orbit span {{ position: absolute; width: 44px; height: 44px; border-radius: 14px; background: var(--accent); box-shadow: 0 12px 22px var(--shadow); }}
 .visual-orbit span:nth-child(1) {{ left: 88px; top: 88px; background: var(--ink); }}
@@ -313,6 +380,14 @@ main {{ width: min(1180px, calc(100% - 32px)); margin: 28px auto; }}
 .highlight-danger {{ border-left-color: var(--danger); background: linear-gradient(135deg, color-mix(in srgb, var(--danger) 16%, transparent), transparent 80%); }}
 .highlight-title {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); font-weight: 800; }}
 .highlight-text {{ font-size: 18px; line-height: 1.35; color: var(--ink); font-weight: 500; }}
+.data-table {{ width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; border: 1px solid var(--line); border-radius: calc(var(--radius) * .7); overflow: hidden; box-shadow: 0 2px 8px var(--shadow); }}
+.data-table caption {{ caption-side: top; text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; padding-bottom: 6px; }}
+.data-table th, .data-table td {{ padding: 10px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }}
+.data-table th {{ background: var(--accent-soft); color: var(--accent-strong, var(--accent)); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; border-bottom: 2px solid var(--accent); }}
+.data-table tr:nth-child(even) td {{ background: var(--panel-alt); }}
+.data-table tr:last-child td {{ border-bottom: none; }}
+.data-table tr:hover td {{ background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }}
+.block-table-empty {{ padding: 14px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; font-size: 12px; }}
 @media (max-width: 760px) {{
   main {{ width: min(100% - 16px, 680px); }}
   .slide {{ aspect-ratio: auto; min-height: 640px; padding: 24px; }}
