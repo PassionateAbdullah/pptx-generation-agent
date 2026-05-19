@@ -43,25 +43,32 @@ _DROP_SENTENCE_PHRASES = (
 )
 
 # Specific phrases scrubbed in place (kept sentence, dropped phrase).
+# Each pattern is conservative: avoid touching nouns like "may" the month or
+# "just" in "just-in-time". We anchor on a following verb so legitimate noun
+# usage doesn't get mangled (previous version of this list rewrote "may
+# delivery" → "s delivery" because `\bmay\s+(\w+)\b` matched any noun).
 _SCRUB_INPLACE = [
-    (re.compile(r"\bcould be (\w+ed)\b", re.IGNORECASE), r"is \1"),
-    (re.compile(r"\bmay\s+(\w+)\b", re.IGNORECASE), r"\1s"),
-    (re.compile(r"\bmight\s+(\w+)\b", re.IGNORECASE), r"\1s"),
-    (re.compile(r"\bshould\s+be\s+(\w+)\b", re.IGNORECASE), r"is \1"),
-    (re.compile(r"\b(?:we|the team)\s+should\b", re.IGNORECASE), "we"),
-    (re.compile(r"\b\bin our view\b", re.IGNORECASE), ""),
+    (re.compile(r"\bcould\s+be\s+([a-z]+ed)\b", re.IGNORECASE), r"is \1"),
+    # Rewrite "may/might/could" only when followed by one of a small set of
+    # common hedge verbs we know are verbs (not nouns). "May delivery" stays
+    # intact because "delivery" isn't on this list.
+    (
+        re.compile(r"\b(?:may|might|could)\s+(help|enable|allow|improve|reduce|increase|grow|drive|support|provide|deliver|address|solve|create|build|expand|accelerate|unlock|generate|bring|offer)\b", re.IGNORECASE),
+        r"\1s",
+    ),
+    (re.compile(r"\b(?:we|our team|the team)\s+should\b", re.IGNORECASE), "we"),
+    (re.compile(r"\bin our view\b", re.IGNORECASE), ""),
     (re.compile(r"\bone could argue\b", re.IGNORECASE), ""),
     (re.compile(r"\bnot necessarily\b", re.IGNORECASE), ""),
     (re.compile(r"\bbroadly speaking\b", re.IGNORECASE), ""),
-    (re.compile(r"\bgenerally\b", re.IGNORECASE), ""),
-    (re.compile(r"\bappear[s]? to\b", re.IGNORECASE), ""),
-    (re.compile(r"\bseem[s]? to\b", re.IGNORECASE), ""),
+    (re.compile(r"\bappears?\s+to\s+be\b", re.IGNORECASE), "is"),
+    (re.compile(r"\bseems?\s+to\s+be\b", re.IGNORECASE), "is"),
     (re.compile(r"\bsomewhat\b", re.IGNORECASE), ""),
     (re.compile(r"\bpotentially\b", re.IGNORECASE), ""),
     (re.compile(r"\bbasically\b", re.IGNORECASE), ""),
-    (re.compile(r"\bactually\b", re.IGNORECASE), ""),
-    (re.compile(r"\breally\b", re.IGNORECASE), ""),
-    (re.compile(r"\bjust\b", re.IGNORECASE), ""),
+    # Drop "actually/really/just" only when followed by a verb-ish form,
+    # so phrases like "just-in-time" or "the real estate" survive.
+    (re.compile(r"\b(?:actually|really)\s+(?=[a-z]+(?:ed|ing|s)\b)", re.IGNORECASE), ""),
     (re.compile(r"\s{2,}"), " "),
 ]
 
