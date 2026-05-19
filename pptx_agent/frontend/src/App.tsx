@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { ChatView } from "./components/ChatView";
 import { PromptForm } from "./components/PromptForm";
 import { PresentationView } from "./components/PresentationView";
+import { SideRail, recordJob } from "./components/SideRail";
+import { SlideDrawer } from "./components/SlideDrawer";
 import { SlideEditor } from "./components/SlideEditor";
-import { Timeline } from "./components/Timeline";
-import { ComputerPanel } from "./components/ComputerPanel";
-import type { SelectedView } from "./components/types";
 import type { SlideData } from "./events";
 import { reduceAll } from "./state";
 import { useEventStream } from "./useEventStream";
@@ -13,14 +13,12 @@ import { useEventStream } from "./useEventStream";
 export function App() {
   const stream = useEventStream();
   const baseJob = useMemo(() => reduceAll(stream.events), [stream.events]);
-  const [selected, setSelected] = useState<SelectedView>({ kind: "summary" });
-  const [theme, setTheme] = useState<string>("slate");
+  const [theme, setTheme] = useState<string>("betopia");
   const [editingSlide, setEditingSlide] = useState<number | null>(null);
+  const [previewingSlide, setPreviewingSlide] = useState<number | null>(null);
   const [presentingFromIndex, setPresentingFromIndex] = useState<number | null>(null);
-  // Optimistic local edits keyed by slide number. Overlay on top of stream-derived state.
   const [localSlideOverrides, setLocalSlideOverrides] = useState<Map<number, SlideData>>(new Map());
 
-  // Reset overrides when a new job starts (jobId changes).
   useEffect(() => {
     setLocalSlideOverrides(new Map());
   }, [baseJob.jobId]);
@@ -40,12 +38,20 @@ export function App() {
     document.documentElement.setAttribute("data-theme", activeTheme);
   }, [activeTheme]);
 
-  // Auto-switch to deck view when generation completes and at least one slide drafted.
   useEffect(() => {
-    if (stream.status === "done" && job.slides.size > 0 && selected.kind !== "deck" && selected.kind !== "slide") {
-      setSelected({ kind: "deck" });
-    }
-  }, [stream.status, job.slides.size, selected.kind]);
+    if (!job.jobId) return;
+    recordJob({
+      jobId: job.jobId,
+      prompt: job.prompt || "",
+      ts: Date.now(),
+      title: job.deckMeta?.title || "",
+    });
+  }, [job.jobId, job.prompt, job.deckMeta?.title]);
+
+  const orderedSlides = useMemo(
+    () => Array.from(job.slides.values()).sort((a, b) => a.number - b.number),
+    [job.slides],
+  );
 
   const onSubmit = async (
     event: FormEvent<HTMLFormElement>,
@@ -54,11 +60,15 @@ export function App() {
     pickedTheme: string,
   ) => {
     event.preventDefault();
-    setSelected({ kind: "phase", phaseId: "research" });
     await stream.start({ prompt, slide_count: slideCount, theme: pickedTheme });
   };
 
   const editingSlideData = editingSlide !== null ? job.slides.get(editingSlide) ?? null : null;
+  const previewingSlideData =
+    previewingSlide !== null ? job.slides.get(previewingSlide) ?? null : null;
+  const previewIndex = previewingSlideData
+    ? orderedSlides.findIndex((s) => s.number === previewingSlideData.number)
+    : -1;
 
   const handleLocalSlideChange = (slide: SlideData) => {
     setLocalSlideOverrides((prev) => {
@@ -68,11 +78,19 @@ export function App() {
     });
   };
 
+  const handleNewTask = () => {
+    setPreviewingSlide(null);
+    setEditingSlide(null);
+    setPresentingFromIndex(null);
+    stream.reset?.();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   return (
-    <div className="app-shell" data-theme={activeTheme}>
+    <div className="app-shell chat-shell" data-theme={activeTheme}>
       <header className="app-header">
         <div className="brand">
-          <span className="brand-mark">P</span>
+          <span className="brand-mark">b</span>
           <div>
             <p className="brand-eyebrow">PPTX Generation Agent</p>
             <h1>{job.deckMeta?.title ?? "Live research → slide deck"}</h1>
@@ -107,32 +125,44 @@ export function App() {
         </div>
       </header>
 
-      <main className="app-main">
-        <aside className="left-rail">
+      <SideRail currentJobId={job.jobId ?? null} onNewTask={handleNewTask} />
+
+      <main className="chat-main">
+        <div className="chat-scroll">
+          <ChatView
+            job={job}
+            onOpenSlide={(n) => setPreviewingSlide(n)}
+            onPresent={(start) => setPresentingFromIndex(start)}
+          />
+          {stream.error && <div className="error-banner">{stream.error}</div>}
+        </div>
+
+        <div className="chat-composer">
           <PromptForm
             disabled={stream.status === "running"}
             onSubmit={onSubmit}
             theme={theme}
             onThemeChange={setTheme}
           />
-          <Timeline
-            job={job}
-            selected={selected}
-            onSelect={setSelected}
-          />
-          {stream.error && <div className="error-banner">{stream.error}</div>}
-        </aside>
-
-        <section className="right-panel">
-          <ComputerPanel
-            job={job}
-            selected={selected}
-            onSelect={setSelected}
-            onEditSlide={(n) => setEditingSlide(n)}
-            onPresent={(start) => setPresentingFromIndex(start)}
-          />
-        </section>
+        </div>
       </main>
+
+      {previewingSlideData && (
+        <SlideDrawer
+          slide={previewingSlideData}
+          themeName={activeTheme}
+          totalSlides={orderedSlides.length}
+          startIndex={previewIndex >= 0 ? previewIndex : 0}
+          jobId={job.jobId ?? null}
+          onClose={() => setPreviewingSlide(null)}
+          onOpenEditor={() => {
+            setEditingSlide(previewingSlideData.number);
+          }}
+          onPresent={() => {
+            setPresentingFromIndex(previewIndex >= 0 ? previewIndex : 0);
+          }}
+        />
+      )}
 
       {editingSlideData && job.jobId && (
         <SlideEditor
@@ -146,7 +176,7 @@ export function App() {
 
       {presentingFromIndex !== null && job.slides.size > 0 && (
         <PresentationView
-          slides={Array.from(job.slides.values()).sort((a, b) => a.number - b.number)}
+          slides={orderedSlides}
           startIndex={presentingFromIndex}
           themeName={activeTheme}
           onClose={() => setPresentingFromIndex(null)}
