@@ -30,6 +30,142 @@ class PipelineTest(unittest.TestCase):
     def test_slide_count_extraction(self):
         self.assertEqual(extract_slide_count("Create a 15-slide pitch deck"), 15)
 
+    def test_extract_topic_strips_command_and_deck_nouns(self):
+        from pptx_agent.planner import extract_topic
+        self.assertEqual(
+            extract_topic("Create a 10-slide pitch deck for our AI platform."),
+            "AI platform",
+        )
+        self.assertEqual(
+            extract_topic("Briefing on healthcare in Bangladesh"),
+            "healthcare in Bangladesh",
+        )
+        self.assertEqual(
+            extract_topic("Make a 12-slide investor deck about agentic AI reliability"),
+            "agentic AI reliability",
+        )
+        self.assertEqual(
+            extract_topic("Build a presentation on solar microgrids in Africa"),
+            "solar microgrids in Africa",
+        )
+
+    def test_extract_topic_does_not_collapse_non_ai_prompts_to_ai_platform(self):
+        from pptx_agent.planner import extract_topic
+        # Old default of "AI platform" swallowed every prompt that mentioned AI
+        # in passing — even when the real topic was healthcare/education.
+        topic = extract_topic("Education and AI in classrooms")
+        self.assertNotEqual(topic, "AI platform")
+        self.assertIn("classrooms", topic.lower())
+        self.assertIn("education", topic.lower())
+
+    def test_deck_audit_flags_cover_with_citations(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "T",
+            "research": {"sources": [{"source_id": "S1", "title": "A", "url": "u"}]},
+            "slides": [{
+                "number": 1, "layout": "cover", "citations": ["S1"],
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "y", "level": 1}},
+                    {"type": "subheading", "props": {"text": "z"}},
+                ],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("cover-has-citations", codes)
+
+    def test_deck_audit_flags_non_numeric_hero_stat(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "T",
+            "research": {"sources": []},
+            "slides": [{
+                "number": 2, "layout": "metrics", "citations": [],
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "y", "level": 1}},
+                    {"type": "hero_stat", "props": {
+                        "value": "Convenience", "label": "user benefit", "source_id": ""}},
+                ],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("hero-stat-non-numeric", codes)
+
+    def test_deck_audit_flags_chart_with_too_few_points(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "T",
+            "research": {"sources": []},
+            "slides": [{
+                "number": 3, "layout": "market", "citations": [],
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "y", "level": 1}},
+                    {"type": "chart", "props": {
+                        "kind": "bar", "labels": ["2022", "2023"],
+                        "series": [{"label": "x", "values": [1.0, 2.0]}]}},
+                ],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("chart-too-few-points", codes)
+
+    def test_deck_audit_flags_unresolved_citation(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "T",
+            "research": {"sources": [{"source_id": "S1", "title": "A", "url": "u"}]},
+            "slides": [{
+                "number": 4, "layout": "problem", "citations": ["S99"],
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "y", "level": 1}},
+                    {"type": "callout", "props": {"tone": "warn", "text": "bad"}},
+                ],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("citation-unresolved", codes)
+
+    def test_deck_audit_flags_missing_required_visual_for_market_layout(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "T",
+            "research": {"sources": []},
+            "slides": [{
+                "number": 5, "layout": "market", "citations": [],
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "y", "level": 1}},
+                    {"type": "paragraph", "props": {"text": "no visuals here"}},
+                    {"type": "bullets", "props": {"items": ["a [S1]", "b [S1]"]}},
+                ],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("missing-required-visual", codes)
+
+    def test_write_deck_artifacts_emits_audit_json_and_panel(self):
+        from pptx_agent.pipeline import write_deck_artifacts
+        from pptx_agent.planner import build_deck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = self.settings(root)
+            research = Researcher(settings).run("briefing on solar", "solar")
+            deck, _ = build_deck("briefing on solar", 5, research, settings)
+            job_dir = root / "j-audit"
+            artifacts = write_deck_artifacts(deck, job_dir, research)
+            audit_path = job_dir / "audit.json"
+            self.assertTrue(audit_path.exists())
+            self.assertIn("audit", artifacts)
+            self.assertIn("findings", artifacts["audit"])
+            html = (job_dir / "slides.html").read_text(encoding="utf-8")
+            # Audit panel renders inside slides.html when there are findings.
+            if artifacts["audit"]["findings"]:
+                self.assertIn("audit-panel", html)
+
     def test_deck_and_pptx_generation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -39,7 +175,12 @@ class PipelineTest(unittest.TestCase):
             deck, logs = build_deck(prompt, 15, research, settings)
             self.assertEqual(deck["slide_count"], 15)
             self.assertEqual(len(deck["slides"]), 15)
-            self.assertIn("Problem", deck_structure_text(deck))
+            # Without LLM the planner emits an honest scaffold — slides are
+            # numbered placeholders that prompt the user to configure
+            # LLM_API_KEY. Verify structure text mentions all 15 slides.
+            structure = deck_structure_text(deck)
+            self.assertIn("(15 Slides)", structure)
+            self.assertIn("15.", structure)
             self.assertTrue(logs)
 
             pptx_path = root / "deck.pptx"
@@ -174,35 +315,180 @@ class PipelineTest(unittest.TestCase):
         self.assertNotEqual(shape_problem, shape_market)
         self.assertGreaterEqual(len(blocks_cover), 3)
 
-    def test_planner_emits_varied_block_shapes(self):
-        from pptx_agent.dynamic_blocks import variety_score
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            settings = self.settings(root)
-            research = Researcher(settings).run("Pitch deck on solar microgrids", "solar microgrids")
-            deck, _ = build_deck("Pitch deck on solar microgrids", 10, research, settings, theme="midnight")
-            score = variety_score([s.get("blocks") or [] for s in deck["slides"]])
-            self.assertGreaterEqual(score, 0.4)
+    def test_scaffold_outline_yields_titles_when_llm_disabled(self):
+        # New contract: without LLM, the planner emits an honest scaffold —
+        # numbered slides with a "configure LLM_API_KEY" callout. No fake
+        # bullets, no recipe-generated charts. Block variety lives in the
+        # LLM-authored path; offline mode is intentionally minimal.
+        from pptx_agent.slide_author import scaffold_outline, _scaffold_slide
+        outline = scaffold_outline("Pitch deck on solar microgrids", "solar microgrids", 10)
+        self.assertEqual(len(outline["slides"]), 10)
+        self.assertEqual(outline["slides"][0]["role"], "cover")
+        self.assertEqual(outline["slides"][-1]["role"], "closing")
+        slide = _scaffold_slide(outline["slides"][2])
+        block_types = [b["type"] for b in slide["blocks"]]
+        self.assertEqual(block_types[0], "eyebrow")
+        self.assertEqual(block_types[1], "heading")
+        self.assertIn("callout", block_types)
 
-    def test_planner_emits_chart_block_when_research_has_numbers(self):
+    def test_planner_outline_pass_uses_deterministic_research_without_llm(self):
+        from pptx_agent.planner import iter_build_deck
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            settings = self.settings(root)
+            settings = self.settings(Path(tmp))
             research = {
-                "sources": [{
-                    "title": "Spend",
-                    "url": "https://example.com/s",
-                    "excerpt": "2020: 4.2% of GDP. 2021: 5.1% of GDP. 2022: 6.4% of GDP. 2023: 7.9% of GDP.",
-                    "snippet": "rising spend",
-                }],
-                "insights": ["Spend rose from 4.2% in 2020 to 7.9% in 2023."],
-                "queries": [],
+                "queries": ["healthcare bangladesh trends"],
+                "insights": [
+                    "Healthcare in Bangladesh has a three-tier delivery model.",
+                    "Workforce and access constraints remain severe in rural regions.",
+                ],
+                "sources": [
+                    {
+                        "source_id": "S1",
+                        "title": "Health system of Bangladesh",
+                        "url": "https://example.com/health",
+                        "snippet": "Primary, secondary, and tertiary care layers.",
+                    }
+                ],
             }
-            deck, _ = build_deck("Healthcare deck", 8, research, settings, theme="slate")
-            charts = [b for s in deck["slides"] for b in (s.get("blocks") or []) if b["type"] == "chart"]
-            self.assertGreater(len(charts), 0)
-            populated = [c for c in charts if c["props"]["series"] and c["props"]["series"][0]["values"]]
-            self.assertGreater(len(populated), 0)
+            events = list(iter_build_deck("Solar microgrids deck", 6, research, settings))
+            phase_ends = [e for e in events if e.get("type") == "phase_end" and e.get("id") == "content"]
+            self.assertEqual(len(phase_ends), 1)
+            deck = phase_ends[0]["result"]
+            self.assertEqual(len(deck["slides"]), 6)
+            block_types = [b.get("type") for s in deck["slides"] for b in (s.get("blocks") or [])]
+            self.assertIn("bullets", block_types)
+            self.assertTrue(any(t in {"highlight", "table", "diagram", "metric_row"} for t in block_types))
+            text_blob = " ".join(str(s.get("title", "")) + " " + str(s.get("subtitle", "")) for s in deck["slides"])
+            self.assertNotIn("LLM_API_KEY", text_blob)
+
+    def test_table_block_extracts_entity_value_rows_from_research(self):
+        from pptx_agent.dynamic_blocks import table_block_from_research
+        research = {
+            "insights": [],
+            "sources": [{
+                "source_id": "S1",
+                "excerpt": "Market share: Public: 60%, NGO: 15%, Private: 25%. Other smaller players hold the rest.",
+                "snippet": "",
+            }],
+        }
+        block = table_block_from_research(5, research)
+        self.assertIsNotNone(block)
+        self.assertEqual(block["type"], "table")
+        rows = block["props"]["rows"]
+        entities = {r[0].lower() for r in rows}
+        self.assertGreaterEqual(len(rows), 3)
+        self.assertTrue({"public", "ngo", "private"}.issubset(entities))
+        self.assertTrue(any("%" in r[1] for r in rows))
+
+    def test_table_block_returns_none_without_entity_value_pattern(self):
+        from pptx_agent.dynamic_blocks import table_block_from_research
+        block = table_block_from_research(
+            5,
+            {"insights": ["No structured comparisons here."], "sources": []},
+        )
+        self.assertIsNone(block)
+
+    def test_outline_emits_table_for_comparison_slide_when_research_supplies_one(self):
+        from pptx_agent.dynamic_outline import build_outline
+        research = {
+            "sources": [{
+                "source_id": "S1",
+                "title": "Segments",
+                "excerpt": "Market share: Public: 60%, NGO: 15%, Private: 25%. Competition vs incumbents differs.",
+                "snippet": "Workforce: 250000.",
+            }],
+            "insights": [],
+        }
+        deck = build_outline(
+            "Investor pitch deck on healthcare in Bangladesh", "healthcare in Bangladesh", 10, research,
+        )
+        types_per_slide = [[b.get("type") for b in s.get("blocks", [])] for s in deck["slides"]]
+        flat = [t for slide in types_per_slide for t in slide]
+        self.assertIn("table", flat)
+
+    def test_slide_author_uses_assigned_sources_with_full_excerpts(self):
+        from pptx_agent.slide_author import _pick_sources
+        research = {
+            "sources": [
+                {"source_id": "S1", "title": "A", "url": "u1", "excerpt": "Big excerpt 1" * 50},
+                {"source_id": "S2", "title": "B", "url": "u2", "excerpt": "Big excerpt 2" * 50},
+                {"source_id": "S3", "title": "C", "url": "u3", "excerpt": "Big excerpt 3" * 50},
+            ],
+        }
+        picked = _pick_sources(research, ["S2", "S3"])
+        ids = [p["source_id"] for p in picked]
+        self.assertEqual(ids, ["S2", "S3"])
+        # Full excerpts (up to 2400 chars) survive the pick — slide author
+        # needs the raw text to lift numbers and entities verbatim.
+        self.assertGreater(len(picked[0]["excerpt"]), 200)
+
+    def test_ground_blocks_drops_chart_with_invented_values(self):
+        from pptx_agent.slide_author import _ground_blocks
+        sources = [{"source_id": "S1", "excerpt": "Spend reached 4.2% in 2020 and 7.9% in 2023."}]
+        good_chart = {
+            "id": "s1-chart", "type": "chart",
+            "props": {"kind": "line", "title": "Spend",
+                      "labels": ["2020", "2023"],
+                      "series": [{"label": "Spend", "values": [4.2, 7.9]}]},
+        }
+        bad_chart = {
+            "id": "s2-chart", "type": "chart",
+            "props": {"kind": "bar", "title": "Made up",
+                      "labels": ["X", "Y", "Z"],
+                      "series": [{"label": "Fake", "values": [11, 22, 33]}]},
+        }
+        out = _ground_blocks([good_chart, bad_chart], sources)
+        types = [b["type"] for b in out]
+        self.assertEqual(types, ["chart"])
+        self.assertEqual(out[0]["id"], "s1-chart")
+
+    def test_ground_blocks_drops_hero_stat_with_no_source_value(self):
+        from pptx_agent.slide_author import _ground_blocks
+        sources = [{"source_id": "S1", "excerpt": "Workforce gap is 250,000 nurses."}]
+        good_hero = {"id": "h1", "type": "hero_stat",
+                     "props": {"value": "250,000", "label": "Workforce gap", "source_id": "S1"}}
+        bad_hero = {"id": "h2", "type": "hero_stat",
+                    "props": {"value": "$15B", "label": "TAM", "source_id": "S1"}}
+        out = _ground_blocks([good_hero, bad_hero], sources)
+        self.assertEqual([b["id"] for b in out], ["h1"])
+
+    def test_ground_blocks_filters_table_rows_lacking_excerpt_match(self):
+        from pptx_agent.slide_author import _ground_blocks
+        sources = [{"source_id": "S1",
+                    "excerpt": "Public sector is 60%. NGO clinics serve 15%. Private is 25%."}]
+        table = {"id": "t1", "type": "table",
+                 "props": {"headers": ["Segment", "Share"],
+                           "rows": [["Public", "60%"], ["NGO", "15%"],
+                                    ["Private", "25%"], ["FakeCo", "99%"]]}}
+        out = _ground_blocks([table], sources)
+        self.assertEqual(len(out), 1)
+        rows = out[0]["props"]["rows"]
+        labels = {r[0] for r in rows}
+        self.assertIn("Public", labels)
+        self.assertNotIn("FakeCo", labels)
+
+    def test_extract_signals_pulls_verbatim_claim_sentences(self):
+        from pptx_agent.slide_author import _extract_signals
+        sources = [{
+            "source_id": "S1",
+            "excerpt": "Government spending is 0.4% of GDP. Workforce gap reached 250,000.",
+        }]
+        signals = _extract_signals(sources)
+        kinds = {s["kind"] for s in signals}
+        self.assertTrue({"percent", "number"} & kinds)
+        self.assertTrue(all(s["source_id"] == "S1" for s in signals))
+
+    def test_slide_author_loads_prompt_templates_from_disk(self):
+        from pptx_agent.prompts import load
+        outline_prompt = load("outline")
+        slide_prompt = load("slide")
+        self.assertIn("publication-ready deck", outline_prompt)
+        self.assertIn("focus_keywords", outline_prompt)
+        # New grounded prompt: signals + validator + density rules.
+        self.assertIn("signals", slide_prompt)
+        self.assertIn("Grounding rules", slide_prompt)
+        self.assertIn("layout-block contract", slide_prompt.lower())
+        self.assertIn("Never invent numbers", slide_prompt)
 
     # ----- Phase 8.5: claim miner, topic families, hedge filter, dynamic outline, slide.md -----
 
@@ -312,6 +598,23 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("**0.4%** — GDP", md)
         self.assertIn("Sources: S1", md)
 
+    def test_pipeline_writes_per_slide_html_files(self):
+        from pptx_agent.pipeline import write_deck_artifacts
+        from pptx_agent.planner import build_deck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = self.settings(root)
+            research = Researcher(settings).run("Deck on solar", "solar")
+            deck, _ = build_deck("Deck on solar", 5, research, settings)
+            job_dir = root / "job-html"
+            write_deck_artifacts(deck, job_dir, research)
+            for n in range(1, 6):
+                p = job_dir / f"slide-{n:02d}.html"
+                self.assertTrue(p.exists(), f"missing {p.name}")
+                txt = p.read_text(encoding="utf-8")
+                self.assertIn("<!doctype html>", txt)
+                self.assertIn(f'data-slide="{n}"', txt)
+
     def test_planner_writes_slide_md_artifact(self):
         from pptx_agent.pipeline import write_deck_artifacts
         from pptx_agent.planner import build_deck
@@ -326,6 +629,22 @@ class PipelineTest(unittest.TestCase):
             md = (job_dir / "slide.md").read_text(encoding="utf-8")
             self.assertIn("##", md)
             self.assertIn("slide_md", artifacts)
+
+    def test_pipeline_writes_layout_audit_artifacts(self):
+        from pptx_agent.pipeline import write_deck_artifacts
+        from pptx_agent.planner import build_deck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = self.settings(root)
+            research = Researcher(settings).run("Pitch on healthcare in Bangladesh", "healthcare in Bangladesh")
+            deck, _ = build_deck("Pitch on healthcare in Bangladesh", 8, research, settings)
+            job_dir = root / "job-layout"
+            artifacts = write_deck_artifacts(deck, job_dir, research)
+            self.assertTrue((job_dir / "layout_report.md").exists())
+            self.assertTrue((job_dir / "layout_report.json").exists())
+            report = artifacts.get("layout_report", {})
+            self.assertIn("summary", report)
+            self.assertIn("status", report.get("summary", {}))
 
     # ----- Phase 12: regenerate single slide -----
 
@@ -423,6 +742,155 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(results[0].url, "https://example.com/img1.jpg")
             self.assertEqual(results[0].thumbnail_url, "https://example.com/thumb1.jpg")
             self.assertEqual(results[1].thumbnail_url, "https://example.com/img2.png")
+
+    # ----- Step 1: intake (source relevance + story validation + targeted queries) -----
+
+    def test_intake_score_source_weights_high_trust(self):
+        from pptx_agent.intake import score_source
+        topic = "healthcare in Bangladesh"
+        gov = {"title": "Healthcare in Bangladesh", "url": "https://www.mohfw.gov.bd/x",
+               "snippet": "healthcare bangladesh", "excerpt": ""}
+        blog = {"title": "Healthcare in Bangladesh", "url": "https://example.blog/post",
+                "snippet": "healthcare bangladesh", "excerpt": ""}
+        score_gov, trust_gov = score_source(gov, topic)
+        score_blog, trust_blog = score_source(blog, topic)
+        self.assertEqual(trust_gov, "gov")
+        self.assertEqual(trust_blog, "blog")
+        # Identical text content + different trust tier → gov outscores blog.
+        self.assertGreater(score_gov, score_blog)
+        self.assertGreater(score_gov / max(score_blog, 1e-6), 2.0)
+
+    def test_intake_filter_sources_rejects_off_topic_low_trust(self):
+        from pptx_agent.intake import filter_sources
+        sources = [
+            {"title": "Healthcare Bangladesh report", "url": "https://who.int/bd",
+             "snippet": "healthcare bangladesh maternal", "excerpt": ""},
+            {"title": "Crypto news today", "url": "https://example.blog/crypto",
+             "snippet": "bitcoin price chart", "excerpt": ""},
+        ]
+        kept, rejected = filter_sources(sources, "healthcare in Bangladesh")
+        kept_urls = {s["url"] for s in kept}
+        self.assertIn("https://who.int/bd", kept_urls)
+        self.assertNotIn("https://example.blog/crypto", kept_urls)
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("low relevance", rejected[0]["reason"])
+
+    def test_intake_validate_story_flags_missing_required_roles(self):
+        from pptx_agent.intake import validate_story
+        outline = {
+            "family": "pitch_deck",
+            "slides": [
+                {"number": 1, "role": "cover", "layout": "cover"},
+                {"number": 2, "role": "solution", "layout": "solution"},
+                {"number": 3, "role": "closing", "layout": "closing"},
+            ],
+        }
+        gaps = validate_story(outline, "pitch_deck")
+        gap_roles = {g.role for g in gaps}
+        # pitch_deck requires problem + market + traction + ask among others.
+        self.assertIn("problem", gap_roles)
+        self.assertIn("market", gap_roles)
+        self.assertIn("ask", gap_roles)
+
+    def test_intake_targeted_queries_fires_only_for_data_heavy_slides(self):
+        from pptx_agent.intake import targeted_queries
+        chart_slide = {"needs_chart": True, "focus_keywords": ["spend", "gdp"],
+                       "title": "Health spend rose"}
+        plain_slide = {"needs_chart": False, "needs_table": False,
+                       "needs_hero_stat": False, "focus_keywords": ["overview"]}
+        qs_chart = targeted_queries(chart_slide, "healthcare in Bangladesh")
+        qs_plain = targeted_queries(plain_slide, "healthcare in Bangladesh")
+        self.assertEqual(len(qs_plain), 0)
+        self.assertGreaterEqual(len(qs_chart), 1)
+        self.assertTrue(any("statistics" in q for q in qs_chart))
+
+    # ----- Step 2: agent_loop -----
+
+    def test_quality_score_weighs_severity(self):
+        from pptx_agent.agent_loop import quality_score
+        audit = {"findings": [
+            {"slide": 1, "severity": "error", "code": "x", "message": "x"},
+            {"slide": 1, "severity": "warn", "code": "y", "message": "y"},
+            {"slide": 2, "severity": "info", "code": "z", "message": "z"},
+        ]}
+        visual = {2: [{"code": "v", "severity": "error", "message": "v"}]}
+        out = quality_score(audit, visual)
+        # 1× error(10) + 1× warn(2) + 1× info(0.5) + 1× error(10) = 22.5
+        self.assertEqual(out["score"], 22.5)
+        self.assertEqual(out["by_severity"]["error"], 2)
+        # Slide 1: error+warn = 12; slide 2: info+error = 10.5
+        self.assertEqual(out["by_slide"][1], 12.0)
+        self.assertEqual(out["by_slide"][2], 10.5)
+
+    def test_run_loop_does_not_call_llm_when_no_slide_level_errors(self):
+        from pptx_agent.agent_loop import run_loop
+        from unittest.mock import MagicMock
+        # Minimal cover slide. Deck-level audit may emit one info finding
+        # ("missing-closing") but no slide-level errors → loop has no slide
+        # to repair, so the LLM must never be invoked.
+        deck = {
+            "title": "T", "theme": "betopia", "topic": "x",
+            "slides": [{
+                "number": 1, "id": "slide-1", "layout": "cover",
+                "title": "T", "subtitle": "", "eyebrow": "",
+                "citations": [], "bullets": [], "metrics": [],
+                "blocks": [
+                    {"id": "s1-b1-eyebrow", "type": "eyebrow", "props": {"text": "x"}},
+                    {"id": "s1-b2-heading", "type": "heading",
+                     "props": {"text": "T", "level": 1}},
+                    {"id": "s1-b3-sub", "type": "subheading", "props": {"text": "x"}},
+                    {"id": "s1-b4-metric", "type": "metric_row",
+                     "props": {"metrics": [{"label": "L", "value": "10"}]}},
+                ],
+            }],
+            "research": {"sources": []},
+        }
+        events = []
+        llm = MagicMock(spec=["complete_json"])
+        run_loop(deck, deck["research"], {}, llm, max_passes=2,
+                 on_event=events.append)
+        llm.complete_json.assert_not_called()
+        # Should still emit at least one loop_pass_start.
+        starts = [e for e in events if e.get("type") == "loop_pass_start"]
+        self.assertEqual(len(starts), 1)
+
+    # ----- Step 3: visual_inspect -----
+
+    def test_visual_inspect_flags_empty_chart_svg(self):
+        from pptx_agent.visual_inspect import inspect_slide_html
+        html = """<html><body>
+          <div class="block-chart"><svg class="chart-svg"></svg></div>
+        </body></html>"""
+        slide = {"blocks": [{"id": "x", "type": "chart", "props": {}}], "citations": []}
+        findings = inspect_slide_html(html, slide)
+        codes = {f.code for f in findings}
+        self.assertIn("chart-empty-render", codes)
+
+    def test_visual_inspect_passes_populated_table(self):
+        from pptx_agent.visual_inspect import inspect_slide_html
+        html = """<html><body>
+          <div class="block-table"><table>
+            <thead><tr><th>a</th><th>b</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>2</td></tr>
+              <tr><td>3</td><td>4</td></tr>
+              <tr><td>5</td><td>6</td></tr>
+            </tbody>
+          </table></div>
+        </body></html>"""
+        slide = {"blocks": [{"id": "x", "type": "table", "props": {}}], "citations": []}
+        findings = inspect_slide_html(html, slide)
+        codes = {f.code for f in findings}
+        self.assertNotIn("table-empty-render", codes)
+
+    def test_visual_inspect_flags_text_density_overflow(self):
+        from pptx_agent.visual_inspect import inspect_slide_html
+        big = "x " * 800
+        html = f"<html><body><div class='block-paragraph'><p>{big}</p></div></body></html>"
+        slide = {"blocks": [{"id": "x", "type": "paragraph", "props": {}}], "citations": []}
+        findings = inspect_slide_html(html, slide)
+        codes = {f.code for f in findings}
+        self.assertIn("density-too-high", codes)
 
 
 if __name__ == "__main__":
