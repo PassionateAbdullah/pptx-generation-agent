@@ -1,50 +1,105 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Iterator
 
-from .blocks import normalize_blocks, slide_to_blocks
 from .citations import cite_slide
 from .config import Settings
-from .dynamic_blocks import compose_slide_blocks, optimize_deck_variety, variety_score
-from .dynamic_outline import build_outline
-from .hedge_filter import scrub_bullets, scrub_paragraph
-from .topic_families import detect_family
+from .dynamic_outline import build_outline as build_dynamic_outline
 from .events import PHASE_CONTENT, PHASE_OUTLINE, make_event
+from .hedge_filter import scrub_paragraph
 from .llm import LLMClient
+from .slide_author import (
+    build_outline_llm,
+    iter_authoring_events,
+)
 from .themes import DEFAULT_THEME, get_theme
 from .utils import clamp, slugify
 
 
 def extract_slide_count(prompt: str, explicit_count: int | None = None) -> int:
+    """Resolve slide count from explicit arg or "<N>-slide" mention in prompt."""
     if explicit_count:
-        return clamp(explicit_count, 5, 25)
+        return clamp(explicit_count, 1, 25)
     match = re.search(r"\b(\d{1,2})\s*[- ]?\s*slides?\b", prompt, flags=re.IGNORECASE)
     if match:
-        return clamp(int(match.group(1)), 5, 25)
+        return clamp(int(match.group(1)), 1, 25)
     return 12
 
 
+_COMMAND_VERBS = (
+    r"create|build|make|generate|write|draft|produce|design|prepare|"
+    r"craft|put together|give me|i need|i want|help me (?:create|build|make)"
+)
+_DECK_NOUNS = (
+    r"pitch deck|investor deck|sales deck|deck|presentation|slide deck|"
+    r"slides?|briefing|brief|report|overview|analysis|study|memo|writeup|"
+    r"document|pptx|powerpoint|google slides"
+)
+_PHRASE_PREFIXES = (
+    r"for our|for an?|for the|for|about|on|regarding|covering|"
+    r"focused on|focusing on|titled|named|called"
+)
+
+
 def extract_topic(prompt: str) -> str:
+    """Pull the subject of the deck out of a free-text prompt.
+
+    Strips command verbs ("create", "build"...), slide count ("10-slide"),
+    deck nouns ("pitch deck", "presentation", "briefing"...), and leading
+    framing phrases ("for our", "about", "on"...). What survives is the
+    topic. No fallback to "AI platform" — that swallowed every non-AI
+    prompt and made every research query generic.
+    """
     cleaned = re.sub(r"\s+", " ", prompt).strip(" .")
-    patterns = [
-        r"for our ([^.]+)",
-        r"for an? ([^.]+)",
-        r"about ([^.]+)",
-        r"on ([^.]+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if match:
-            topic = match.group(1).strip(" .")
-            topic = re.sub(r"\b(pitch deck|presentation|slides?)\b", "", topic, flags=re.IGNORECASE)
-            topic = re.sub(r"\s+", " ", topic).strip(" .")
-            if topic:
-                return topic
-    if "ai" in cleaned.lower():
-        return "AI platform"
-    return "startup platform"
+
+    # 1. Phrase-prefix lift: "Create a 10-slide pitch deck on healthcare in
+    #    Bangladesh" → after "on" → "healthcare in Bangladesh".
+    prefix_pattern = rf"\b(?:{_PHRASE_PREFIXES})\s+([^.,;:?]+)"
+    match = re.search(prefix_pattern, cleaned, flags=re.IGNORECASE)
+    if match:
+        topic = _clean_topic(match.group(1))
+        if topic:
+            return topic
+
+    # 2. Strip command verb at sentence start.
+    stripped = re.sub(
+        rf"^(?:{_COMMAND_VERBS})\s+", "", cleaned, count=1, flags=re.IGNORECASE
+    )
+    topic = _clean_topic(stripped)
+    if topic:
+        return topic
+
+    # 3. Last resort: original cleaned prompt minus deck nouns + counts.
+    return _clean_topic(cleaned) or "the requested topic"
+
+
+def _clean_topic(text: str) -> str:
+    """Remove slide counts, deck nouns, and trailing fluff from a topic span."""
+    if not text:
+        return ""
+    out = text
+    # "10-slide", "10 slide", "10 slides"
+    out = re.sub(r"\b\d{1,2}\s*[- ]?\s*slides?\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\b(?:{_DECK_NOUNS})\b", "", out, flags=re.IGNORECASE)
+    # "I need", "give me", "help me" etc. prefixes → drop.
+    out = re.sub(
+        r"^(?:i\s+(?:need|want)|give\s+me|help\s+me|please)\s+",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(r"\b(?:a|an|the)\b\s+", " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"[\"'“”‘’]", "", out)
+    out = re.sub(r"\s+", " ", out).strip(" .,-—:;|")
+    # Drop dangling prepositions left over after stripping deck nouns
+    # (e.g. "market of EV charging" → "EV charging" if "market" was a noun;
+    # here we keep the topic core).
+    out = re.sub(r"^(?:of|for|in|on|about|regarding)\s+", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+(?:of|for|in|on|about|regarding)$", "", out, flags=re.IGNORECASE)
+    # Collapse repeated whitespace from internal strips.
+    out = re.sub(r"\s{2,}", " ", out).strip(" .,-—:;|")
+    return out
 
 
 def build_deck(
@@ -63,12 +118,7 @@ def build_deck(
         elif etype == "phase_end" and event.get("id") == PHASE_CONTENT:
             deck = event.get("result")
     if deck is None:
-        topic = extract_topic(prompt)
-        deck = normalize_deck(
-            build_outline(prompt, topic, slide_count, research),
-            prompt, topic, slide_count, research,
-        )
-        deck["theme"] = get_theme(theme).name
+        deck = _empty_deck(prompt, slide_count, research, theme)
     return deck, logs
 
 
@@ -82,85 +132,297 @@ def iter_build_deck(
     yield make_event("phase_start", id=PHASE_OUTLINE, label="Plan outline")
     topic = extract_topic(prompt)
     llm = LLMClient(settings)
-    deck: dict[str, Any] | None = None
     resolved_theme = get_theme(theme).name
+    llm_ok = False
 
+    # ---- Probe LLM up front. Bad keys / wrong model / wrong endpoint:
+    # surface the error to the UI immediately instead of running N+1 doomed
+    # calls and emitting a deck full of placeholder slides.
     if llm.enabled:
-        yield make_event("log", phase=PHASE_OUTLINE, text=f"LLM planner enabled with model: {settings.llm_model}.")
-        try:
-            raw = _build_with_llm(llm, prompt, topic, slide_count, research)
-            deck = normalize_deck(raw, prompt, topic, slide_count, research)
-            yield make_event("log", phase=PHASE_OUTLINE, text="LLM returned a valid slide plan.")
-        except Exception as exc:  # noqa: BLE001
+        yield make_event(
+            "log", phase=PHASE_OUTLINE,
+            text=f"Probing LLM: {settings.llm_model} @ {settings.llm_base_url}",
+        )
+        ok, msg = llm.probe()
+        if ok:
+            llm_ok = True
+            yield make_event("log", phase=PHASE_OUTLINE, text="LLM probe ok.")
+        else:
             yield make_event(
-                "log",
-                phase=PHASE_OUTLINE,
-                text=f"LLM planning failed; using deterministic planner. Reason: {exc}",
+                "log", phase=PHASE_OUTLINE,
+                text=(
+                    "LLM probe failed; falling back to deterministic research-based planning. "
+                    f"Reason: {msg[:220]}"
+                ),
             )
     else:
-        yield make_event("log", phase=PHASE_OUTLINE, text="LLM planner not configured. Using deterministic planner.")
-
-    if deck is None:
-        family = detect_family(prompt)
         yield make_event(
-            "log",
-            phase=PHASE_OUTLINE,
-            text=f"Topic family detected: {family.name} ({family.label}).",
+            "log", phase=PHASE_OUTLINE,
+            text="LLM not configured. Using deterministic research-based planning.",
         )
-        outline_deck = build_outline(prompt, topic, slide_count, research)
-        yield make_event(
-            "log",
-            phase=PHASE_OUTLINE,
-            text=f"Outline built from research: {len(outline_deck['slides'])} slide(s).",
+
+    # ---- Outline pass (single LLM call) ----
+    outline: dict[str, Any]
+    deterministic_deck: dict[str, Any] | None = None
+    if llm_ok:
+        try:
+            outline = build_outline_llm(prompt, topic, slide_count, research, llm)
+            yield make_event(
+                "log", phase=PHASE_OUTLINE,
+                text=f"Outline returned: {len(outline.get('slides') or [])} slide(s), family={outline.get('family') or '—'}.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            llm_ok = False
+            yield make_event(
+                "log", phase=PHASE_OUTLINE,
+                text=f"LLM outline failed; using deterministic fallback. Reason: {str(exc)[:220]}",
+            )
+            deterministic_deck = _build_deterministic_deck(
+                prompt=prompt,
+                topic=topic,
+                slide_count=slide_count,
+                research=research,
+                theme=resolved_theme,
+            )
+            outline = _outline_from_existing_deck(deterministic_deck)
+    else:
+        deterministic_deck = _build_deterministic_deck(
+            prompt=prompt,
+            topic=topic,
+            slide_count=slide_count,
+            research=research,
+            theme=resolved_theme,
         )
-        deck = normalize_deck(outline_deck, prompt, topic, slide_count, research)
+        outline = _outline_from_existing_deck(deterministic_deck)
 
-    deck["theme"] = resolved_theme
+    # Story-arc validation + 1-shot LLM repair if required roles are missing.
+    if llm_ok:
+        from .intake import validate_story, story_gap_repair_prompt
+        gaps = validate_story(outline, outline.get("family"))
+        if gaps:
+            for g in gaps:
+                yield make_event(
+                    "story_gap", phase=PHASE_OUTLINE,
+                    role=g.role, severity=g.severity, suggestion=g.suggestion,
+                )
+            try:
+                from .prompts import load as _load_prompt
+                repaired = llm.complete_json(
+                    _load_prompt("outline"),
+                    story_gap_repair_prompt(outline, gaps, slide_count),
+                    max_tokens=1600,
+                )
+                if repaired and repaired.get("slides"):
+                    outline = repaired
+                    yield make_event(
+                        "log", phase=PHASE_OUTLINE,
+                        text=f"Patched outline to cover {len(gaps)} missing role(s): "
+                             f"{', '.join(g.role for g in gaps)}.",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                yield make_event(
+                    "log", phase=PHASE_OUTLINE,
+                    text=f"Story-gap repair failed; keeping original outline. Reason: {str(exc)[:160]}",
+                )
 
-    sources = research.get("sources") or []
-    for slide in deck["slides"]:
-        existing = slide.get("citations")
-        if isinstance(existing, list) and existing:
-            slide["citations"] = [str(item) for item in existing if item]
-        else:
-            slide["citations"] = cite_slide(slide, sources)
+    # Targeted research: spawn focused queries for any slide that asks for
+    # data-heavy blocks but has weak or no source assignment.
+    if research.get("sources"):
+        from .intake import targeted_queries
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .research import Researcher
+        pending: list[tuple[dict[str, Any], list[str]]] = []
+        for entry in outline.get("slides") or []:
+            if not (entry.get("needs_chart") or entry.get("needs_table") or entry.get("needs_hero_stat")):
+                continue
+            if len(entry.get("assigned_source_ids") or []) >= 2:
+                continue
+            queries = targeted_queries(entry, topic)
+            if queries:
+                pending.append((entry, queries))
+        if pending:
+            researcher = Researcher(settings)
+            new_sources: list[dict[str, Any]] = []
+            existing_urls = {str(s.get("url", "")).lower() for s in research.get("sources") or []}
+            with ThreadPoolExecutor(max_workers=min(4, len(pending))) as pool:
+                futs = {}
+                for entry, queries in pending:
+                    for q in queries:
+                        futs[pool.submit(researcher._search, researcher._resolve_provider(), q)] = (entry, q)
+                for fut in as_completed(futs):
+                    entry, q = futs[fut]
+                    try:
+                        hits = fut.result() or []
+                    except Exception:  # noqa: BLE001
+                        continue
+                    yield make_event(
+                        "targeted_query", phase=PHASE_OUTLINE,
+                        slide=entry.get("number"), query=q, hits=len(hits),
+                    )
+                    for r in hits[:3]:
+                        if not r.url or r.url.lower() in existing_urls:
+                            continue
+                        existing_urls.add(r.url.lower())
+                        new_sources.append({
+                            "title": r.title, "url": r.url, "snippet": r.snippet,
+                            "excerpt": r.snippet, "query": q,
+                        })
+            if new_sources:
+                start_idx = len(research.get("sources") or []) + 1
+                for i, s in enumerate(new_sources, start=start_idx):
+                    s["source_id"] = f"S{i}"
+                research.setdefault("sources", []).extend(new_sources)
+                yield make_event(
+                    "log", phase=PHASE_OUTLINE,
+                    text=f"Targeted research added {len(new_sources)} source(s) for data-heavy slides.",
+                )
 
-    # Phase 8 optimize pass: critique variety, rotate recipes if too uniform.
-    score_before = variety_score([s.get("blocks") or [] for s in deck["slides"]])
-    changed, score_after = optimize_deck_variety(deck, research, topic_seed=topic)
-    yield make_event(
-        "log",
-        phase=PHASE_OUTLINE,
-        text=(
-            f"Variety score: {score_before:.2f}"
-            + (f" → {score_after:.2f} after optimize" if changed else " (no optimize needed)")
-        ),
-    )
+    # Pad or trim to exact slide_count.
+    outline["slides"] = _normalize_outline_slides(outline.get("slides") or [], slide_count, topic)
+
+    deck_title = scrub_paragraph(str(outline.get("title") or _title_for_topic(topic)))
+    deck_subtitle = scrub_paragraph(str(outline.get("subtitle") or _subtitle_for_topic(topic)))
+    audience = str(outline.get("audience") or "Stakeholders")
+    family = str(outline.get("family") or "report")
 
     yield make_event(
         "deck_meta",
         phase=PHASE_OUTLINE,
-        title=deck["title"],
-        subtitle=deck.get("subtitle", ""),
-        slide_count=deck["slide_count"],
-        topic=deck.get("topic", topic),
+        title=deck_title,
+        subtitle=deck_subtitle,
+        slide_count=slide_count,
+        topic=topic,
         theme=resolved_theme,
     )
-    for slide in deck["slides"]:
+    for entry in outline["slides"]:
         yield make_event(
             "slide_outline",
             phase=PHASE_OUTLINE,
-            number=slide["number"],
-            title=slide["title"],
-            subtitle=slide.get("subtitle", ""),
-            eyebrow=slide.get("eyebrow", ""),
-            layout=slide.get("layout", "solution"),
+            number=entry["number"],
+            title=entry.get("title", ""),
+            subtitle=entry.get("subtitle", ""),
+            eyebrow=entry.get("eyebrow", ""),
+            layout=entry.get("layout") or entry.get("role") or "solution",
         )
     yield make_event("phase_end", id=PHASE_OUTLINE)
 
+    # ---- Content pass: per-slide LLM authoring in parallel ----
     yield make_event("phase_start", id=PHASE_CONTENT, label="Write slide content")
+
+    deck_meta = {
+        "prompt": prompt,
+        "topic": topic,
+        "title": deck_title,
+        "audience": audience,
+        "family": family,
+    }
+
+    authored: dict[int, dict[str, Any]] = {}
+    if llm_ok:
+        max_workers = max(1, min(6, int(getattr(settings, "max_search_queries", 6) or 6)))
+        for evt in iter_authoring_events(outline, research, deck_meta, llm, max_workers=max_workers):
+            etype = evt.get("type")
+            if etype in {"slide_authored", "slide_failed"}:
+                slide = evt.get("slide")
+                if slide:
+                    authored[int(slide["number"])] = slide
+                    yield make_event(
+                        "slide_detail", phase=PHASE_CONTENT,
+                        number=int(slide["number"]), slide=slide,
+                    )
+                    if etype == "slide_failed":
+                        yield make_event(
+                            "log", phase=PHASE_CONTENT,
+                            text=f"Slide {slide['number']} fell back to scaffold: {str(evt.get('error'))[:200]}",
+                        )
+            elif etype == "slides_ready":
+                # final list arrives ordered — already captured per-event.
+                pass
+    else:
+        if deterministic_deck is None:
+            deterministic_deck = _build_deterministic_deck(
+                prompt=prompt,
+                topic=topic,
+                slide_count=slide_count,
+                research=research,
+                theme=resolved_theme,
+            )
+        for slide in deterministic_deck.get("slides") or []:
+            authored[int(slide["number"])] = slide
+            yield make_event(
+                "slide_detail", phase=PHASE_CONTENT,
+                number=int(slide["number"]), slide=slide,
+            )
+
+    # Assemble final deck in slide-number order.
+    slides = [authored[n] for n in sorted(authored.keys())]
+    _enforce_citations(slides, research.get("sources") or [])
+
+    deck = {
+        "title": deck_title,
+        "subtitle": deck_subtitle,
+        "topic": topic,
+        "slug": slugify(deck_title),
+        "audience": audience,
+        "prompt": prompt,
+        "slide_count": slide_count,
+        "theme": resolved_theme,
+        "family": family,
+        "research": research,
+        "slides": slides,
+    }
+
+    # ---- Self-repair loop (render → inspect → repair → repeat) ----
+    if llm_ok and slides:
+        from .agent_loop import run_loop, quality_score
+        from .deck_audit import audit_deck as _audit
+        from .visual_inspect import inspect_slide_html as _inspect
+        from .html_renderer import render_single_slide_html as _render
+
+        pending_events: list[dict[str, Any]] = []
+
+        def _on_loop_event(evt: dict[str, Any]) -> None:
+            pending_events.append(evt)
+
+        try:
+            run_loop(deck, research, deck_meta, llm, max_passes=2, on_event=_on_loop_event)
+        except Exception as exc:  # noqa: BLE001
+            yield make_event(
+                "log", phase=PHASE_CONTENT,
+                text=f"Agent loop aborted: {str(exc)[:200]}",
+            )
+
+        for evt in pending_events:
+            etype = evt.get("type")
+            if etype == "slide_repaired" and evt.get("ok") and evt.get("slide"):
+                yield make_event(
+                    "slide_detail", phase=PHASE_CONTENT,
+                    number=int(evt["slide"]["number"]), slide=evt["slide"],
+                )
+            yield make_event(etype or "log", phase=PHASE_CONTENT, **{
+                k: v for k, v in evt.items() if k not in {"type", "slide"}
+            })
+
+        # Final quality snapshot (lower = better; 0 = clean).
+        final_audit = _audit(deck)
+        final_visual: dict[int, list[dict[str, Any]]] = {}
+        for sl in deck.get("slides") or []:
+            n = int(sl.get("number") or 0)
+            findings = _inspect(_render(deck, sl), sl)
+            if findings:
+                final_visual[n] = [
+                    {"code": f.code, "severity": f.severity,
+                     "message": f.message, "suggested_fix": f.suggested_fix}
+                    for f in findings
+                ]
+        deck["quality"] = quality_score(final_audit, final_visual)
+        yield make_event(
+            "log", phase=PHASE_CONTENT,
+            text=f"Final quality score: {deck['quality']['score']} "
+                 f"({deck['quality']['by_severity']})",
+        )
+
     for slide in deck["slides"]:
-        yield make_event("slide_detail", phase=PHASE_CONTENT, number=slide["number"], slide=slide)
         if slide.get("citations"):
             yield make_event(
                 "slide_citation",
@@ -171,431 +433,169 @@ def iter_build_deck(
     yield make_event("phase_end", id=PHASE_CONTENT, result=deck)
 
 
-def _build_with_llm(
-    llm: LLMClient,
-    prompt: str,
-    topic: str,
-    slide_count: int,
-    research: dict[str, Any],
-) -> dict[str, Any]:
-    system = (
-        "You are a senior presentation strategist. Return only JSON. "
-        "Create investor-grade slide plans that can be rendered as HTML and PPTX."
-    )
-    user = json.dumps(
-        {
-            "task": prompt,
-            "topic": topic,
-            "slide_count": slide_count,
-            "research": {
-                "sources": research.get("sources", []),
-                "insights": research.get("insights", []),
-            },
-            "required_schema": {
-                "title": "string",
-                "subtitle": "string",
-                "audience": "string",
-                "slides": [
-                    {
-                        "title": "string",
-                        "subtitle": "string",
-                        "layout": "cover|problem|solution|metrics|market|architecture|comparison|roadmap|team|ask|closing",
-                        "eyebrow": "string",
-                        "bullets": ["3 to 5 concise bullets"],
-                        "metrics": [{"label": "string", "value": "string"}],
-                        "speaker_notes": "string",
-                        "citations": ["S1", "S2"],
-                    }
-                ],
-            },
-            "rules": [
-                "Return exactly slide_count slides.",
-                "No markdown fences.",
-                "Use concrete but clearly assumptive metrics if the prompt lacks company data.",
-                "Use source-aware language without fake citations.",
-                "For each slide, include a citations array listing source_id values (e.g. \"S1\", \"S3\") whose snippet/excerpt actually supports the slide's claims. Empty array if no source applies.",
-            ],
-        },
-        ensure_ascii=False,
-    )
-    result = llm.complete_json(system, user)
-    if not result:
-        raise RuntimeError("empty LLM result")
-    return result
+# ---------------------------------------------------------------------------
+# Deck-level helpers
+# ---------------------------------------------------------------------------
 
 
-def _fallback_deck(prompt: str, topic: str, slide_count: int, research: dict[str, Any]) -> dict[str, Any]:
-    title = _title_for_topic(topic)
-    subtitle = _subtitle_for_topic(topic)
-    points = _research_points(research)
-    primary_point = _point(
-        points,
-        0,
-        f"Use the user prompt and live research to explain {topic} with concrete evidence.",
-    )
-    problem_point = _point(
-        points,
-        1,
-        "The strongest narrative separates current-state context, stakeholder pain, and the opportunity to improve outcomes.",
-    )
-    timing_point = _point(
-        points,
-        2,
-        "Policy shifts, buyer expectations, technology readiness, and service gaps should be connected to a clear why-now argument.",
-    )
-
-    templates = [
-        {
-            "layout": "cover",
-            "eyebrow": "Research Deck",
-            "title": title,
-            "subtitle": subtitle,
-            "bullets": [
-                primary_point,
-                "Built from live SearXNG research and source snippets.",
-                "Organized for an investor or decision-maker discussion.",
-            ],
-            "metrics": [{"label": "Deck", "value": f"{slide_count} slides"}],
-        },
-        {
-            "layout": "market",
-            "eyebrow": "Landscape",
-            "title": f"Current State Of {title}",
-            "subtitle": primary_point,
-            "bullets": [
-                _point(points, 1, "Identify the main delivery channels, buyers, users, and service constraints."),
-                _point(points, 2, "Separate national context from the first beachhead or target segment."),
-                "Use source-backed facts before making market or product claims.",
-            ],
-            "metrics": [{"label": "Focus", "value": "Current state"}, {"label": "Evidence", "value": "Live sources"}],
-        },
-        {
-            "layout": "problem",
-            "eyebrow": "Problem",
-            "title": "The Gap Is Specific, Not Generic",
-            "subtitle": problem_point,
-            "bullets": [
-                _point(points, 3, "Call out the highest-friction problem for users or institutions."),
-                "Show who feels the pain, how often it happens, and what it costs.",
-                "Avoid broad sector descriptions unless they connect to an urgent decision.",
-            ],
-            "metrics": [{"label": "Pain", "value": "Defined"}, {"label": "Impact", "value": "Measurable"}],
-        },
-        {
-            "layout": "solution",
-            "eyebrow": "Stakeholders",
-            "title": "The Stakeholder Map Shapes The Opportunity",
-            "subtitle": "A strong deck names the people, institutions, and budgets involved in the decision.",
-            "bullets": [
-                "Clarify the primary user, economic buyer, implementation owner, and regulator.",
-                _point(points, 4, "Use research to distinguish public, private, and partnership roles."),
-                "Translate stakeholder incentives into adoption requirements.",
-            ],
-            "metrics": [{"label": "Users", "value": "Named"}, {"label": "Buyer", "value": "Defined"}],
-        },
-        {
-            "layout": "metrics",
-            "eyebrow": "Why Now",
-            "title": "The Timing Needs A Clear Trigger",
-            "subtitle": timing_point,
-            "bullets": [
-                "Connect current data points to a change in urgency or willingness to adopt.",
-                "Explain why the opportunity is better now than it was one or two years ago.",
-                _point(points, 5, "Use source evidence for policy, market, funding, or technology shifts."),
-            ],
-            "metrics": [{"label": "Timing", "value": "Now"}, {"label": "Trigger", "value": "Evidence"}],
-        },
-        {
-            "layout": "solution",
-            "eyebrow": "Opportunity",
-            "title": "A Focused Opportunity Beats A Broad Sector Claim",
-            "subtitle": "Start with the segment where the pain, budget, and ability to implement overlap.",
-            "bullets": [
-                "Define the beachhead use case and the measurable outcome it improves.",
-                "Explain why this target segment can adopt faster than the whole market.",
-                "Use the broader landscape as expansion logic, not as the whole thesis.",
-            ],
-            "metrics": [{"label": "Beachhead", "value": "Focused"}, {"label": "Expansion", "value": "Planned"}],
-        },
-        {
-            "layout": "market",
-            "eyebrow": "Evidence",
-            "title": "What The Research Says",
-            "subtitle": _point(points, 6, "The source list should drive the claims, not decorate a finished deck."),
-            "bullets": [
-                _point(points, 0, "Use the strongest source finding as the first proof point."),
-                _point(points, 1, "Use the second source finding to validate the problem or market."),
-                _point(points, 2, "Use the third source finding to shape positioning or timing."),
-            ],
-            "metrics": [{"label": "Sources", "value": str(len(research.get("sources", [])))}, {"label": "Claims", "value": "Grounded"}],
-        },
-        {
-            "layout": "solution",
-            "eyebrow": "Market",
-            "title": "Market Logic And Adoption Path",
-            "subtitle": "The deck should show how the first use case can become a larger platform or service business.",
-            "bullets": [
-                "Describe TAM, SAM, and the initial reachable segment separately.",
-                "Show the adoption path by customer type, geography, channel, or workflow.",
-                "Tie growth to repeat usage, partnerships, distribution, or regulatory readiness.",
-            ],
-            "metrics": [{"label": "Segment", "value": "Specific"}, {"label": "Path", "value": "Sequenced"}],
-        },
-        {
-            "layout": "comparison",
-            "eyebrow": "Differentiation",
-            "title": "Positioning Must Be Defensible",
-            "subtitle": "Differentiation should compare against the real alternatives visible in the market.",
-            "bullets": [
-                "Name direct competitors, substitutes, and the status quo.",
-                "Explain what is meaningfully better: access, quality, cost, speed, trust, or integration.",
-                "Show why the advantage can compound over time.",
-            ],
-            "metrics": [{"label": "Alternatives", "value": "Compared"}, {"label": "Advantage", "value": "Clear"}],
-        },
-        {
-            "layout": "metrics",
-            "eyebrow": "Model",
-            "title": "Business Model And Unit Economics",
-            "subtitle": "The revenue logic should match how the buyer already pays for outcomes or services.",
-            "bullets": [
-                "Define who pays, when they pay, and what value metric pricing follows.",
-                "Separate recurring revenue, implementation fees, services, and partnership revenue.",
-                "List the assumptions that need validation in pilots.",
-            ],
-            "metrics": [{"label": "Buyer", "value": "Known"}, {"label": "Pricing", "value": "Testable"}],
-        },
-        {
-            "layout": "metrics",
-            "eyebrow": "Proof",
-            "title": "Traction And Validation Plan",
-            "subtitle": "Use real company evidence when available; otherwise show the exact validation plan.",
-            "bullets": [
-                "Summarize pilots, LOIs, partnerships, usage, revenue, or expert validation.",
-                "Define the next three proof points needed to reduce investor risk.",
-                "Connect traction metrics directly to the problem and buyer budget.",
-            ],
-            "metrics": [{"label": "Proof", "value": "Needed"}, {"label": "Risk", "value": "Reducing"}],
-        },
-        {
-            "layout": "roadmap",
-            "eyebrow": "Execution",
-            "title": "Roadmap From Insight To Adoption",
-            "subtitle": "The roadmap should move from research-backed wedge to repeatable execution.",
-            "bullets": [
-                "Phase 1: validate the highest-risk assumptions with the first target users.",
-                "Phase 2: build repeatable delivery, partnerships, and measurement.",
-                "Phase 3: expand across adjacent segments once the wedge is proven.",
-            ],
-            "metrics": [{"label": "Horizon", "value": "12 months"}],
-        },
-        {
-            "layout": "comparison",
-            "eyebrow": "Risks",
-            "title": "Risks And Mitigations",
-            "subtitle": "Credible decks name adoption blockers before investors do.",
-            "bullets": [
-                "Adoption risk: prove workflow fit with a narrow initial segment.",
-                "Execution risk: define owner, timeline, partner dependency, and success metric.",
-                "Policy or trust risk: show compliance, governance, and stakeholder buy-in plan.",
-            ],
-            "metrics": [{"label": "Risks", "value": "Named"}, {"label": "Plan", "value": "Mitigated"}],
-        },
-        {
-            "layout": "ask",
-            "eyebrow": "The Ask",
-            "title": "The Ask Should Match The Next Milestone",
-            "subtitle": "Close with the capital, partnership, or decision needed to prove the opportunity.",
-            "bullets": [
-                "Specify the funding amount or decision requested.",
-                "Tie use of funds to product, operations, distribution, and validation milestones.",
-                "Define what success looks like at the next financing or decision point.",
-            ],
-            "metrics": [{"label": "Ask", "value": "Specific"}, {"label": "Milestone", "value": "Next"}],
-        },
-        {
-            "layout": "closing",
-            "eyebrow": "Close",
-            "title": f"{title}: From Research To Action",
-            "subtitle": "The opportunity is strongest when evidence, focus, and execution plan reinforce each other.",
-            "bullets": [
-                "Lead with the clearest evidence from the research.",
-                "Focus the next step on one measurable decision or pilot.",
-                "Use updated source data before presenting externally.",
-            ],
-            "metrics": [{"label": "Next step", "value": "Decision"}],
-        },
-    ]
-
-    slides = templates[:slide_count]
-    if slide_count < len(templates) and slides:
-        slides[-1] = templates[-1]
-    while len(slides) < slide_count:
-        index = len(slides) + 1
-        slides.append(
+def _normalize_outline_slides(
+    raw_slides: list[Any], slide_count: int, topic: str
+) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for i, raw in enumerate(raw_slides[:slide_count], start=1):
+        if not isinstance(raw, dict):
+            continue
+        cleaned.append(
             {
-                "layout": "solution",
-                "eyebrow": f"Appendix {index - len(templates)}",
-                "title": f"Additional Proof Point {index}",
-                "subtitle": "Use this slide for customer evidence, financial detail, or a product screenshot.",
-                "bullets": [
-                    "Add the strongest supporting evidence for the investor conversation.",
-                    "Keep the slide focused on one decision-driving message.",
-                    "Use metrics, screenshots, or customer language where possible.",
-                ],
-                "metrics": [{"label": "Proof", "value": str(index)}],
+                "number": i,
+                "role": str(raw.get("role") or raw.get("layout") or _default_role(i, slide_count)),
+                "layout": str(raw.get("layout") or raw.get("role") or _default_role(i, slide_count)),
+                "eyebrow": scrub_paragraph(str(raw.get("eyebrow") or "")),
+                "title": scrub_paragraph(str(raw.get("title") or f"Slide {i}")),
+                "subtitle": scrub_paragraph(str(raw.get("subtitle") or "")),
+                "focus_keywords": [str(k) for k in (raw.get("focus_keywords") or [])][:6],
+                "assigned_source_ids": [str(s) for s in (raw.get("assigned_source_ids") or [])],
+                "needs_chart": bool(raw.get("needs_chart")),
+                "needs_table": bool(raw.get("needs_table")),
+                "needs_diagram": bool(raw.get("needs_diagram")),
+                "needs_hero_stat": bool(raw.get("needs_hero_stat")),
             }
         )
 
+    while len(cleaned) < slide_count:
+        i = len(cleaned) + 1
+        cleaned.append(
+            {
+                "number": i,
+                "role": _default_role(i, slide_count),
+                "layout": _default_role(i, slide_count),
+                "eyebrow": "",
+                "title": f"Slide {i}",
+                "subtitle": "",
+                "focus_keywords": [],
+                "assigned_source_ids": [],
+                "needs_chart": False,
+                "needs_table": False,
+                "needs_diagram": False,
+                "needs_hero_stat": False,
+            }
+        )
+
+    # Renumber to guarantee 1..N.
+    for i, entry in enumerate(cleaned, start=1):
+        entry["number"] = i
+    return cleaned
+
+
+def _default_role(i: int, total: int) -> str:
+    if i == 1:
+        return "cover"
+    if i == total:
+        return "closing"
+    return "solution"
+
+
+def _enforce_citations(slides: list[dict[str, Any]], sources: list[dict[str, Any]]) -> None:
+    """Fill missing citations from text-overlap matching so every slide
+    that talks about something in the research carries [S#] traceability."""
+    for slide in slides:
+        existing = slide.get("citations") or []
+        if existing:
+            slide["citations"] = [str(c) for c in existing if c]
+            continue
+        slide["citations"] = cite_slide(slide, sources)
+
+
+def _empty_deck(
+    prompt: str,
+    slide_count: int,
+    research: dict[str, Any],
+    theme: str | None,
+) -> dict[str, Any]:
+    topic = extract_topic(prompt)
+    resolved_theme = get_theme(theme).name
+    deterministic = _build_deterministic_deck(
+        prompt=prompt,
+        topic=topic,
+        slide_count=slide_count,
+        research=research,
+        theme=resolved_theme,
+    )
+    slides = deterministic.get("slides") or []
     return {
-        "title": f"{title} Pitch Deck",
-        "subtitle": subtitle,
-        "audience": "Investors, operators, and decision-makers",
+        "title": deterministic.get("title") or topic,
+        "subtitle": deterministic.get("subtitle") or "",
         "topic": topic,
+        "slug": deterministic.get("slug") or slugify(topic),
+        "audience": deterministic.get("audience") or "Stakeholders",
         "prompt": prompt,
+        "slide_count": slide_count,
+        "theme": resolved_theme,
+        "family": deterministic.get("family") or "report",
+        "research": research,
         "slides": slides,
     }
 
 
-def _research_points(research: dict[str, Any]) -> list[str]:
-    points: list[str] = []
-    for insight in research.get("insights", []):
-        _append_point(points, insight)
-    for source in research.get("sources", []):
-        if not isinstance(source, dict):
-            continue
-        for key in ("excerpt", "snippet"):
-            _append_point(points, source.get(key, ""))
-            if len(points) >= 10:
-                return points
-    return points
-
-
-def _append_point(points: list[str], value: Any) -> None:
-    text = _compact_text(str(value or ""))
-    if not text:
-        return
-    if text not in points:
-        points.append(text)
-
-
-def _point(points: list[str], index: int, fallback: str) -> str:
-    if index < len(points):
-        return points[index]
-    return fallback
-
-
-def _compact_text(value: str, limit: int = 190) -> str:
-    text = re.sub(r"\s+", " ", value).strip()
-    text = re.sub(r"\bMissing:.*$", "", text).strip()
-    if not text:
-        return ""
-    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
-    if len(sentence) <= limit:
-        return sentence
-    return sentence[: limit - 1].rstrip(" ,;:-") + "."
-
-
-def normalize_deck(
-    deck: dict[str, Any],
+def _build_deterministic_deck(
     prompt: str,
     topic: str,
     slide_count: int,
     research: dict[str, Any],
+    theme: str,
 ) -> dict[str, Any]:
-    title = str(deck.get("title") or f"{_title_for_topic(topic)} Pitch Deck")
-    subtitle = str(deck.get("subtitle") or _subtitle_for_topic(topic))
-    raw_slides = deck.get("slides") or []
+    deck = build_dynamic_outline(prompt, topic, slide_count, research)
+    deck["prompt"] = prompt
+    deck["topic"] = topic
+    deck["slide_count"] = slide_count
+    deck["theme"] = theme
+    deck["research"] = research
+    deck["slug"] = slugify(str(deck.get("title") or topic))
+    for index, slide in enumerate(deck.get("slides") or [], start=1):
+        slide["number"] = index
+        slide["id"] = slide.get("id") or f"slide-{index}"
+        slide["accent_variant"] = int(slide.get("accent_variant") or ((index - 1) % 4))
+    return deck
+
+
+def _outline_from_existing_deck(deck: dict[str, Any]) -> dict[str, Any]:
     slides: list[dict[str, Any]] = []
-    for index, raw in enumerate(raw_slides[:slide_count], start=1):
-        if not isinstance(raw, dict):
-            continue
-        bullets = raw.get("bullets") or []
-        if isinstance(bullets, str):
-            bullets = [bullets]
-        metrics = raw.get("metrics") or []
-        if not isinstance(metrics, list):
-            metrics = []
-        raw_citations = raw.get("citations") or raw.get("source_refs") or []
-        if isinstance(raw_citations, (list, tuple)):
-            citations = [str(item) for item in raw_citations if item]
-        else:
-            citations = []
-        cleaned_bullets = scrub_bullets([str(item) for item in bullets[:8]])[:5]
-        slide_dict = {
-            "number": index,
-            "id": f"slide-{index}",
-            "layout": str(raw.get("layout") or _layout_for_index(index, slide_count)),
-            "eyebrow": str(raw.get("eyebrow") or f"Slide {index}"),
-            "title": scrub_paragraph(str(raw.get("title") or f"Slide {index}")),
-            "subtitle": scrub_paragraph(str(raw.get("subtitle") or "")),
-            "bullets": cleaned_bullets,
-            "metrics": [_normalize_metric(item) for item in metrics[:4]],
-            "speaker_notes": str(raw.get("speaker_notes") or raw.get("notes") or ""),
-            "citations": citations,
-            "accent_variant": int(raw.get("accent_variant") if raw.get("accent_variant") is not None else (index - 1) % 4),
-        }
-        raw_blocks = raw.get("blocks")
-        if isinstance(raw_blocks, list) and raw_blocks:
-            slide_dict["blocks"] = normalize_blocks(index, raw_blocks)
-        else:
-            # Phase 8: dynamic composition for slide variety.
-            slide_dict["blocks"] = compose_slide_blocks(
-                slide_dict,
-                position=index - 1,
-                total=slide_count,
-                research=research,
-                topic_seed=topic,
-            )
-        slides.append(slide_dict)
-
-    if len(slides) < slide_count:
-        fallback = build_outline(prompt, topic, slide_count, research)
-        for raw in fallback["slides"][len(slides) : slide_count]:
-            index = len(slides) + 1
-            slide_dict = {
-                "number": index,
-                "id": f"slide-{index}",
-                "layout": raw["layout"],
-                "eyebrow": raw["eyebrow"],
-                "title": raw["title"],
-                "subtitle": raw["subtitle"],
-                "bullets": raw["bullets"],
-                "metrics": raw["metrics"],
-                "speaker_notes": "",
-                "citations": [],
-                "accent_variant": (index - 1) % 4,
+    for slide in deck.get("slides") or []:
+        slides.append(
+            {
+                "number": int(slide.get("number") or (len(slides) + 1)),
+                "role": str(slide.get("layout") or "solution"),
+                "layout": str(slide.get("layout") or "solution"),
+                "eyebrow": str(slide.get("eyebrow") or ""),
+                "title": str(slide.get("title") or f"Slide {len(slides) + 1}"),
+                "subtitle": str(slide.get("subtitle") or ""),
+                "focus_keywords": [],
+                "assigned_source_ids": [str(s) for s in (slide.get("citations") or [])],
+                "needs_chart": False,
+                "needs_table": False,
+                "needs_diagram": False,
+                "needs_hero_stat": False,
             }
-            slide_dict["blocks"] = compose_slide_blocks(
-                slide_dict,
-                position=index - 1,
-                total=slide_count,
-                research=research,
-                topic_seed=topic,
-            )
-            slides.append(slide_dict)
-
-    theme_name = get_theme(str(deck.get("theme") or DEFAULT_THEME)).name
+        )
     return {
-        "title": title,
-        "subtitle": subtitle,
-        "topic": topic,
-        "slug": slugify(title),
-        "audience": str(deck.get("audience") or "Investors"),
-        "prompt": prompt,
-        "slide_count": slide_count,
-        "theme": theme_name,
-        "family": str(deck.get("family") or ""),
-        "research": research,
+        "title": str(deck.get("title") or ""),
+        "subtitle": str(deck.get("subtitle") or ""),
+        "audience": str(deck.get("audience") or "Stakeholders"),
+        "family": str(deck.get("family") or "report"),
         "slides": slides,
     }
+
+
+# ---------------------------------------------------------------------------
+# Artifact emitters (deck structure text + slide-content markdown)
+# ---------------------------------------------------------------------------
 
 
 def deck_structure_text(deck: dict[str, Any]) -> str:
     lines = [f"{deck['title']} Structure ({deck['slide_count']} Slides):"]
     for slide in deck["slides"]:
         label = slide.get("eyebrow") or slide.get("layout", "Slide").title()
-        description = (slide["subtitle"] or label).rstrip(".")
+        description = (slide.get("subtitle") or label).rstrip(".")
         lines.append(
             f"{slide['number']}. {label}: {slide['title']} - {description}."
         )
@@ -624,7 +624,7 @@ def slide_content_markdown(deck: dict[str, Any]) -> str:
             lines.append("")
             lines.append("Metrics:")
             for metric in metrics:
-                lines.append(f"- {metric['label']}: {metric['value']}")
+                lines.append(f"- {metric.get('label')}: {metric.get('value')}")
         if slide.get("speaker_notes"):
             lines.append("")
             lines.append(f"Speaker note: {slide['speaker_notes']}")
@@ -638,33 +638,23 @@ def slide_content_markdown(deck: dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _normalize_metric(item: Any) -> dict[str, str]:
-    if isinstance(item, dict):
-        return {
-            "label": str(item.get("label") or item.get("name") or "Metric"),
-            "value": str(item.get("value") or item.get("amount") or ""),
-        }
-    return {"label": "Metric", "value": str(item)}
-
-
-def _layout_for_index(index: int, slide_count: int) -> str:
-    if index == 1:
-        return "cover"
-    if index == slide_count:
-        return "closing"
-    return "solution"
-
-
 def _title_for_topic(topic: str) -> str:
     words = topic.strip()
     if not words:
         return "Research Opportunity"
-    if "ai" in words.lower() and "platform" in words.lower():
-        return "NextGen AI Platform"
-    return words.title()
+    return words[0].upper() + words[1:]
 
 
 def _subtitle_for_topic(topic: str) -> str:
-    if "ai" in topic.lower():
-        return "Revolutionizing enterprise decision-making with scalable intelligence"
-    return "Turning live research into an investor-ready growth story"
+    return f"What the research says about {topic}." if topic else "Research-backed deck."
+
+
+__all__ = [
+    "extract_slide_count",
+    "extract_topic",
+    "build_deck",
+    "iter_build_deck",
+    "deck_structure_text",
+    "slide_content_markdown",
+    "DEFAULT_THEME",
+]
