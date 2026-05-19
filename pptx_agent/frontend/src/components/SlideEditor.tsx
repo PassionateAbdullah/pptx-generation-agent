@@ -30,7 +30,7 @@ const LAYOUTS = [
 
 const ADDABLE_BLOCKS: BlockType[] = [
   "heading", "subheading", "paragraph", "bullets", "metric_row",
-  "hero_stat", "highlight", "quote", "callout", "image", "chart", "diagram", "spacer",
+  "hero_stat", "highlight", "table", "quote", "callout", "image", "chart", "diagram", "spacer",
 ];
 
 export function SlideEditor({ jobId, slide, themeName, onClose, onLocalChange }: Props) {
@@ -49,17 +49,27 @@ export function SlideEditor({ jobId, slide, themeName, onClose, onLocalChange }:
     setLocal(slide);
   }, [slide]);
 
+  // Flush any pending debounced patch before the editor unmounts.
+  // Without this, typing then hitting Esc within 400ms loses the last edit.
+  const handleClose = () => {
+    patch.flush().finally(onClose);
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") handleClose();
     };
     window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
+      // Defensive: flush on unmount in case the parent removed the modal
+      // via state change rather than handleClose.
+      void patch.flush();
     };
-  }, [onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const activeTheme = themes.find((t) => t.name === (local.layout && (local as { theme?: string }).theme) || t.name === themeName) || themes.find((t) => t.name === themeName);
   const surfaceStyle = useMemo(() => tokensToStyle(activeTheme?.tokens), [activeTheme]);
@@ -182,6 +192,7 @@ export function SlideEditor({ jobId, slide, themeName, onClose, onLocalChange }:
       spacer: { size: "md" },
       hero_stat: { value: "42%", label: "key metric", trend: "", source_id: "" },
       highlight: { tone: "accent", title: "KEY INSIGHT", text: "Why this matters in one sentence." },
+      table: { headers: ["Metric", "Value"], rows: [["Users", "10K"], ["Growth", "+12%"]], caption: "" },
     };
     const newBlock: SlideBlock = { id: newId, type, props: defaults[type] };
     commit({ ...local, blocks: [...blocks, newBlock] });
@@ -208,7 +219,7 @@ export function SlideEditor({ jobId, slide, themeName, onClose, onLocalChange }:
             {patch.status === "saving" && <span className="muted small">Saving…</span>}
             {patch.status === "saved" && <span className="ok small">Saved ✓</span>}
             {patch.status === "error" && <span className="danger small">Save failed: {patch.error}</span>}
-            <button type="button" className="btn ghost" onClick={onClose}>Close (Esc)</button>
+            <button type="button" className="btn ghost" onClick={handleClose}>Close (Esc)</button>
           </div>
         </header>
 
