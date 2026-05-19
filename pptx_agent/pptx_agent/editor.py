@@ -40,6 +40,15 @@ def apply_slide_patch(deck: dict[str, Any], slide_number: int, patch: dict[str, 
         if field in patch:
             target[field] = str(patch[field] or "")
 
+    # Preserve or update accent_variant (phase 12.5 visual rotation).
+    if "accent_variant" in patch:
+        try:
+            target["accent_variant"] = int(patch["accent_variant"]) % 4
+        except (TypeError, ValueError):
+            pass
+    elif "accent_variant" not in target:
+        target["accent_variant"] = (slide_number - 1) % 4
+
     if "bullets" in patch:
         bullets = patch["bullets"] or []
         if isinstance(bullets, str):
