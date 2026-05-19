@@ -48,6 +48,7 @@ export interface JobState {
   slideCount: number;
   status: "idle" | "running" | "done" | "error";
   error: string | null;
+  errors: string[];
 
   phases: Record<PhaseId, PhaseState>;
   phaseOrder: PhaseId[];
@@ -77,6 +78,7 @@ export function emptyJob(): JobState {
     slideCount: 0,
     status: "idle",
     error: null,
+    errors: [],
     phases: {} as Record<PhaseId, PhaseState>,
     phaseOrder: [],
     research: {
@@ -289,8 +291,13 @@ export function reduce(prev: JobState, event: AgentEvent): JobState {
       return state;
     }
     case "error": {
-      state.status = "error";
-      state.error = event.message;
+      // Collect errors but do not flip status — the pipeline may still
+      // complete the rest of the deck (e.g. scaffold mode after LLM probe
+      // fails). The stream-level status from useEventStream tracks network
+      // failures separately.
+      const msg = event.message || "(no message)";
+      state.errors = state.errors.includes(msg) ? state.errors : [...state.errors, msg];
+      state.error = msg;
       return state;
     }
   }
