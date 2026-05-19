@@ -12,7 +12,7 @@ Pipeline:
   2. Optionally refresh research for this slide only via a focused SearXNG
      query keyed on the slide title + new keywords. Merges fresh sources
      into the deck's research dict (no global re-research).
-  3. Rebuild the slide using ``dynamic_outline._blocks_for_role`` with
+  3. Rebuild the slide using ``dynamic_outline.blocks_for_role`` with
      directive-adjusted parameters (claim caps, theme-keyword reroute,
      mandatory chart block, hedge intensity).
   4. Return the new slide dict; caller writes back into the deck and
@@ -32,13 +32,13 @@ from typing import Any
 from .claim_miner import Claim, mine_claims, take_top_claims_for_theme
 from .config import Settings
 from .dynamic_outline import (
-    _ROLE_FALLBACK_BULLETS,
-    _build_subtitle,
-    _claims_to_bullets,
-    _blocks_for_role,
-    _fallback_bullets_for_role,
-    _metrics_from_claims,
-    _title_from_claim,
+    ROLE_FALLBACK_BULLETS,
+    blocks_for_role,
+    build_subtitle,
+    claims_to_bullets,
+    fallback_bullets_for_role,
+    metrics_from_claims,
+    title_from_claim,
 )
 from .hedge_filter import assertive, scrub_bullets
 from .research import Researcher, SearchResult
@@ -157,13 +157,13 @@ def regenerate_slide(
         themed = [c for c in themed if c.kind in {"currency", "percent", "head_to_head", "number", "time"}] or themed
 
     title = (
-        _title_from_claim(themed[0], role, topic_label, deck.get("prompt") or "")
+        title_from_claim(themed[0], role, topic_label, deck.get("prompt") or "")
         if themed
         else fill_title_template(role.title_template, topic_label, deck.get("prompt") or "")
     )
-    subtitle = _build_subtitle(themed, topic_label, fallback=old_slide.get("subtitle") or "")
-    fallbacks = _fallback_bullets_for_role(role, topic_label, pk, count=max_claims)
-    bullets = _claims_to_bullets(
+    subtitle = build_subtitle(themed, topic_label, fallback=old_slide.get("subtitle") or "")
+    fallbacks = fallback_bullets_for_role(role, topic_label, pk, count=max_claims)
+    bullets = claims_to_bullets(
         themed,
         min_n=max(1, role.min_claims),
         max_n=max_claims,
@@ -171,7 +171,7 @@ def regenerate_slide(
     )
     if directives.less_corporate:
         bullets = [_soften(b) for b in bullets]
-    metrics = _metrics_from_claims(themed)
+    metrics = metrics_from_claims(themed)
     citations = sorted({c.source_id for c in themed if c.source_id})
 
     # Force structural changes per directives.
@@ -205,7 +205,7 @@ def regenerate_slide(
         "regenerated_from": old_slide.get("title", ""),
         "regenerate_instruction": directives.raw,
     }
-    new_slide["blocks"] = _blocks_for_role(
+    new_slide["blocks"] = blocks_for_role(
         forced_role,
         number=slide_number,
         title=title,
