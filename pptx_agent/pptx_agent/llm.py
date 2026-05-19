@@ -16,7 +16,41 @@ class LLMClient:
     def enabled(self) -> bool:
         return bool(self.settings.llm_api_key and self.settings.llm_model)
 
-    def complete_json(self, system: str, user: str) -> dict[str, Any] | None:
+    def probe(self) -> tuple[bool, str]:
+        """Make one tiny chat request to verify auth + model + endpoint.
+
+        Returns ``(ok, message)``. On failure ``message`` carries the raw
+        HTTP error so the user sees what's actually wrong (401 key, 404
+        model, DNS failure, etc.) — the pipeline aborts loudly instead of
+        silently emitting placeholder slides.
+        """
+        if not self.enabled:
+            return False, "LLM not configured (LLM_API_KEY or LLM_MODEL missing)."
+        try:
+            self.complete_json(
+                "Return only this JSON.",
+                '{"ping": "pong"}\nRespond with a JSON object: {"ok": true}',
+                max_tokens=64,
+            )
+            return True, ""
+        except RuntimeError as exc:
+            return False, str(exc)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"unexpected LLM error: {exc}"
+
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int = 2200,
+    ) -> dict[str, Any] | None:
+        """Send one JSON-mode chat completion.
+
+        ``max_tokens`` defaults to 2200 — enough for a per-slide block list
+        but well within OpenRouter free-tier credit caps. Bump per call when
+        a larger response is genuinely needed.
+        """
         if not self.enabled:
             return None
 
@@ -25,6 +59,7 @@ class LLMClient:
             {
                 "model": self.settings.llm_model,
                 "temperature": 0.35,
+                "max_tokens": int(max_tokens),
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system},
