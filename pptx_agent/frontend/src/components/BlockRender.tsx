@@ -146,6 +146,33 @@ function renderBlock(type: string, props: Record<string, unknown>): JSX.Element 
         </aside>
       );
     }
+    case "table": {
+      const headers = (props.headers as string[]) || [];
+      const rows = (props.rows as string[][]) || [];
+      const caption = String(props.caption || "");
+      if (headers.length === 0 && rows.length === 0) {
+        return <div className="block-table-empty">[empty table]</div>;
+      }
+      return (
+        <table className="data-table">
+          {caption && <caption>{caption}</caption>}
+          {headers.length > 0 && (
+            <thead>
+              <tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr>
+            </thead>
+          )}
+          {rows.length > 0 && (
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i}>
+                  {r.map((c, j) => <td key={j}>{c}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          )}
+        </table>
+      );
+    }
     default:
       return <span className="muted">[{type}]</span>;
   }
