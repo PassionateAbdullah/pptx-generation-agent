@@ -146,7 +146,8 @@ export type BlockType =
   | "diagram"
   | "spacer"
   | "hero_stat"
-  | "highlight";
+  | "highlight"
+  | "table";
 
 export interface SlideBlock {
   id: string;
