@@ -14,7 +14,9 @@ they are part of the job artifact tree and can be served via the existing
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +25,43 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+
+
+def _is_private_address(host: str) -> bool:
+    """SSRF guard: reject hostnames resolving to private / link-local / loopback
+    IPs and known cloud-metadata endpoints.
+
+    Used before any server-side image fetch so a user-supplied URL cannot
+    probe internal infrastructure or the metadata service.
+    """
+    if not host:
+        return True
+    host_l = host.lower()
+    if host_l in {"localhost", "metadata.google.internal", "metadata"}:
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return True
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%", 1)[0])
+        except ValueError:
+            continue
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True
+        # Block AWS / GCP / Azure metadata service IP.
+        if str(ip) in {"169.254.169.254", "169.254.170.2", "fd00:ec2::254"}:
+            return True
+    return False
 
 
 @dataclass
@@ -144,10 +183,15 @@ class ImageBroker:
         """Download ``url`` into ``job_dir/media/`` and return metadata.
 
         Returns ``{filename, local_url, mime, size, sha}``. Raises on HTTP
-        failure or unsupported MIME.
+        failure or unsupported MIME. Rejects URLs targeting private,
+        loopback, link-local, or cloud-metadata addresses (SSRF guard).
         """
         if not url.startswith(("http://", "https://")):
             raise ValueError("Image URL must be http(s)://")
+
+        parsed = urllib.parse.urlparse(url)
+        if _is_private_address(parsed.hostname or ""):
+            raise RuntimeError("Refused: image URL resolves to a private / loopback / metadata address.")
 
         request = urllib.request.Request(
             url,
