@@ -4,8 +4,33 @@ from typing import Any
 
 from .blocks import slide_to_blocks
 from .charts import render_chart_svg
-from .themes import all_theme_css, get_theme
+from .themes import get_theme, html_ppt_theme_filename
 from .utils import escape_html
+
+
+# Path prefix where the vendored html-ppt assets are served from. The server's
+# static-file mount (web/dist/*) makes `/static/html-ppt/...` available
+# without any extra route. See `web/dist/static/html-ppt/LICENSE-html-ppt.txt`.
+_HTMLPPT = "/static/html-ppt"
+
+
+def _theme_links(theme_name: str) -> str:
+    """Emit the <link> + <script> tags that pull in html-ppt's CSS/JS.
+
+    Order matters: base → active theme → bridge → animations. Bridge must
+    follow the theme so our token aliases override any earlier defaults.
+    The `<link id="theme-link">` element is the one html-ppt's `runtime.js`
+    mutates when the user presses `T` to cycle themes.
+    """
+    theme_file = html_ppt_theme_filename(theme_name)
+    return (
+        f'<link rel="stylesheet" href="{_HTMLPPT}/base.css">\n'
+        f'<link rel="stylesheet" id="theme-link" href="{_HTMLPPT}/themes/{theme_file}">\n'
+        f'<link rel="stylesheet" href="{_HTMLPPT}/token-bridge.css">\n'
+        f'<link rel="stylesheet" href="{_HTMLPPT}/animations/animations.css">\n'
+        f'<script src="{_HTMLPPT}/runtime.js" defer></script>\n'
+        f'<script src="{_HTMLPPT}/animations/fx-runtime.js" defer></script>'
+    )
 
 
 def render_preview_fragment(deck: dict) -> str:
@@ -24,7 +49,8 @@ def render_full_html(deck: dict, audit: dict | None = None) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escape_html(deck["title"])}</title>
-  <style>{_standalone_css()}</style>
+  {_theme_links(theme.name)}
+  <style>{_block_css()}</style>
   <style>{audit_css}</style>
 </head>
 <body>
@@ -56,7 +82,8 @@ def render_single_slide_html(deck: dict, slide: dict[str, Any]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escape_html(deck.get("title", ""))} — Slide {slide.get("number", "")}</title>
-  <style>{_standalone_css()}</style>
+  {_theme_links(theme.name)}
+  <style>{_block_css()}</style>
   <style>
     body {{ background: var(--bg); padding: 24px; }}
     main {{ max-width: 1100px; margin: 0 auto; }}
@@ -83,7 +110,11 @@ def _render_slide(slide: dict[str, Any]) -> str:
     layout = escape_html(slide.get("layout", "solution"))
     variant = int(slide.get("accent_variant") or ((int(slide.get("number") or 1) - 1) % 4))
     body = "\n".join(_render_block(block) for block in blocks)
-    return f"""<article class="slide slide-{layout} slide-accent-{variant}" data-slide="{slide["number"]}" data-slide-id="{escape_html(slide.get("id", ""))}" data-accent-variant="{variant}">
+    # Slide-level entry animation (one of html-ppt's 27 `data-anim` names).
+    # Falls back to ``""`` so existing decks keep rendering exactly as before.
+    slide_anim = str(slide.get("animation") or "")
+    anim_attr = f' data-anim="{escape_html(slide_anim)}"' if slide_anim else ""
+    return f"""<article class="slide slide-{layout} slide-accent-{variant} is-active" data-slide="{slide["number"]}" data-slide-id="{escape_html(slide.get("id", ""))}" data-accent-variant="{variant}"{anim_attr}>
   <div class="slide-topline">
     <span>{slide["number"]:02d}</span>
     <span>{escape_html(slide.get("eyebrow", ""))}</span>
@@ -100,7 +131,16 @@ def _render_block(block: dict[str, Any]) -> str:
     block_id = escape_html(str(block.get("id") or ""))
     renderer = _BLOCK_RENDERERS.get(type_, _render_unknown)
     inner = renderer(props)
-    return f'<div class="block block-{escape_html(type_)}" data-block-id="{block_id}">{inner}</div>'
+    # Optional html-ppt animation hook: a block prop "anim" maps to one of
+    # html-ppt's 27 `data-anim` keyframe names (see
+    # web/dist/static/html-ppt/animations/animations.css). Anything else is
+    # passed through verbatim — fx-runtime.js validates on the client.
+    anim_raw = str(props.get("anim") or "").strip()
+    anim_attr = f' data-anim="{escape_html(anim_raw)}"' if anim_raw else ""
+    return (
+        f'<div class="block block-{escape_html(type_)}" '
+        f'data-block-id="{block_id}"{anim_attr}>{inner}</div>'
+    )
 
 
 def _render_eyebrow(props: dict[str, Any]) -> str:
@@ -296,11 +336,13 @@ _BLOCK_RENDERERS = {
 }
 
 
-def _standalone_css() -> str:
+def _block_css() -> str:
+    """CSS for our 16 block types + slide chrome. Token names (--ink,
+    --panel, --accent_strong, ...) resolve via token-bridge.css after
+    html-ppt's base.css + active theme load."""
     return f"""
-{all_theme_css()}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); }}
+body {{ margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body, var(--font-sans)); }}
 main {{ width: min(1180px, calc(100% - 32px)); margin: 28px auto; }}
 .print-header {{ margin: 0 0 18px; }}
 .print-header p {{ margin: 0 0 4px; color: var(--accent); font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: .04em; }}
