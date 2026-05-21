@@ -30,6 +30,20 @@ from typing import Any
 
 _NUMBER_RE = re.compile(r"\d")
 _CITATION_RE = re.compile(r"\[S\d+\]")
+# Junk-title detector. A slide title that opens with a nav verb or contains
+# site-chrome tokens is almost certainly leaked boilerplate, not authored
+# copy. Flag it so the repair loop re-authors.
+_JUNK_TITLE_PREFIX_RE = re.compile(
+    r"^\s*(?:download|sign\s*in|log\s*in|subscribe|toggle|read\s+more|"
+    r"upload|click|accept|share|home\s*\||main\s+menu|search)\b",
+    re.IGNORECASE,
+)
+_JUNK_TITLE_TOKENS_RE = re.compile(
+    r"\b(?:toggle\s+navigation|0\s+ratings?|0%\s+found|free\s+for\s+30\s+days|"
+    r"full\s+description|uploaded\s+by|sign\s*in\s+upload|cookie\s+policy|"
+    r"toggle\s+navigation\s+english|read\s+more\s+download)\b",
+    re.IGNORECASE,
+)
 
 
 # Layout → required-visual contract. Mirrors prompts/slide.md.
@@ -55,6 +69,9 @@ _VISUAL_BLOCKS = {
 }
 
 
+_audit_deck_topic_cache: dict[int, str] = {}
+
+
 def audit_deck(deck: dict[str, Any]) -> dict[str, Any]:
     """Return ``{findings: [...], stats: {...}}`` for a finished deck."""
     findings: list[dict[str, Any]] = []
@@ -64,6 +81,13 @@ def audit_deck(deck: dict[str, Any]) -> dict[str, Any]:
         for s in (deck.get("research") or {}).get("sources") or []
         if isinstance(s, dict)
     }
+
+    # Stash the deck topic keyed by each slide's id() so _audit_slide can
+    # read it without a signature change (used by topic-alignment check).
+    deck_topic = str(deck.get("topic") or "")
+    _audit_deck_topic_cache.clear()
+    for slide in slides:
+        _audit_deck_topic_cache[id(slide)] = deck_topic
 
     for slide in slides:
         findings.extend(_audit_slide(slide, sources_by_id))
@@ -157,6 +181,64 @@ def _audit_slide(
 
     block_types = [str(b.get("type") or "") for b in blocks]
     types_set = set(block_types)
+
+    # --- Bullets+paragraph tail (the LLM's safety-net wall-of-text closer) ---
+    if len(block_types) >= 2 and block_types[-2:] == ["bullets", "paragraph"]:
+        findings.append(_f(
+            number, "warn", "bullets-paragraph-tail",
+            "slide closes with bullets+paragraph — pick one closer (drop the paragraph "
+            "or replace it with a callout/highlight)",
+        ))
+    if block_types.count("paragraph") + block_types.count("bullets") >= 3:
+        findings.append(_f(
+            number, "warn", "too-much-prose",
+            "slide has 3+ text-only blocks; swap at least one for a visual block",
+        ))
+
+    # --- Default subheading abuse ---
+    # If the slide carries a subheading whose text barely adds anything beyond
+    # the heading, flag it so the LLM drops the redundant block on repair.
+    if "subheading" in block_types:
+        head_text = ""
+        sub_text = ""
+        for b in blocks:
+            t = b.get("type")
+            if t == "heading":
+                head_text = str((b.get("props") or {}).get("text") or "")
+            elif t == "subheading":
+                sub_text = str((b.get("props") or {}).get("text") or "")
+        if head_text and sub_text:
+            from .citations import _tokens
+            h = _tokens(head_text)
+            s = _tokens(sub_text)
+            if s and h and len(s - h) <= 1:
+                findings.append(_f(
+                    number, "info", "redundant-subheading",
+                    "subheading mostly repeats heading tokens; consider removing it",
+                ))
+
+    # --- Junk-title detector ---
+    title_text = str(slide.get("title") or "").strip()
+    if _JUNK_TITLE_PREFIX_RE.search(title_text) or _JUNK_TITLE_TOKENS_RE.search(title_text):
+        findings.append(_f(
+            number, "error", "title-looks-like-site-chrome",
+            f"slide title appears to be scraped nav/upload boilerplate: '{title_text[:80]}'",
+        ))
+
+    # --- Topic alignment: token overlap between slide text and deck topic ---
+    deck_topic = _audit_deck_topic_cache.get(id(slide), "")
+    if deck_topic and layout not in {"cover", "closing", "ask"}:
+        slide_blob = " ".join([
+            title_text,
+            str(slide.get("subtitle") or ""),
+            " ".join(str(b) for b in (slide.get("bullets") or [])),
+        ])
+        score = _topic_overlap(slide_blob, deck_topic)
+        if score < 0.10:
+            findings.append(_f(
+                number, "warn", "off-topic-slide",
+                f"slide text shows weak overlap with deck topic (score={score:.2f})",
+            ))
 
     # --- Block-count density rules ---
     if len(blocks) < 3:
@@ -313,12 +395,27 @@ def _audit_deck_level(deck: dict[str, Any], slides: list[dict[str, Any]]) -> lis
         findings.append(_f(None, "info", "missing-closing",
                            "last slide is not closing/ask/recommendations"))
 
-    # Variety: how many distinct visual-block shapes?
+    # Variety: how many distinct block-shape signatures? Threshold tightened
+    # — at least 70% of slides must show a distinct block shape, otherwise
+    # the deck reads like a template copy-paste.
     shapes = ["-".join(str(b.get("type") or "") for b in (s.get("blocks") or [])) for s in slides]
     unique = len(set(shapes))
-    if len(slides) >= 4 and unique * 2 < len(slides):
-        findings.append(_f(None, "warn", "low-variety",
-                           f"only {unique} unique block shapes across {len(slides)} slides"))
+    if len(slides) >= 4 and unique * 10 < len(slides) * 7:
+        findings.append(_f(
+            None, "warn", "low-variety",
+            f"only {unique}/{len(slides)} distinct block shapes — slides repeat the same structure",
+        ))
+
+    # Consecutive-shape repeat: two adjacent slides with the identical block
+    # sequence is the most visible "every slide looks the same" symptom.
+    for i in range(1, len(shapes)):
+        if shapes[i] and shapes[i] == shapes[i - 1]:
+            findings.append(_f(
+                int((slides[i].get("number") or 0)),
+                "warn", "shape-repeat-with-prev",
+                "block-type sequence is identical to the previous slide — vary the closer",
+            ))
+            break  # one flag is enough; loop quality_score doesn't need a per-slide spam
 
     # Source coverage: how many sources are actually cited?
     cited: set[str] = set()
@@ -340,6 +437,19 @@ def _audit_deck_level(deck: dict[str, Any], slides: list[dict[str, Any]]) -> lis
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _topic_overlap(text: str, topic: str) -> float:
+    """Lightweight token-Jaccard between slide text and deck topic."""
+    from .citations import _tokens
+    t = _tokens(text)
+    p = _tokens(topic)
+    if not t or not p:
+        return 1.0  # don't flag empty topic / empty slide
+    overlap = t & p
+    if not overlap:
+        return 0.0
+    return len(overlap) / (len(t) ** 0.5 * len(p) ** 0.5)
 
 
 def _f(slide: int | None, severity: str, code: str, message: str) -> dict[str, Any]:
