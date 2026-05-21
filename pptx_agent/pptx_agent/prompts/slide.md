@@ -65,11 +65,29 @@ A downstream validator scans every chart value, table cell, hero_stat value, and
 
 # Density rules — make it look like a real slide, not plain text
 
-8. **First block is always `eyebrow`. Second is always `heading`.** Third should be `subheading` only if it adds info beyond the heading.
+8. **First block is always `eyebrow`. Second is always `heading`.** **DO NOT emit a `subheading` block unless it adds information the heading does not already carry.** Most slides skip the subheading entirely. If the heading is already a full sentence, the subheading is forbidden.
+
 9. **Every slide must contain at least one "visual" block:** chart, table, diagram, hero_stat, metric_row, highlight, or callout. If none of these can be grounded, switch the layout intent and lean on `highlight` + `quote`.
+
 10. **Pair text with a visual.** Avoid two consecutive `paragraph` / `bullets` blocks. Alternate text and visual so the slide reads like a designed slide, not a wall of bullets.
-11. **`paragraph` blocks ≤ 60 words.** Long prose belongs in `speaker_notes`, not on the slide.
-12. **3–6 blocks total. No padding.** A slide with 4 strong blocks beats one with 8 weak ones.
+
+11. **Never end a slide with `bullets + paragraph` together.** Pick one closer — either bullets OR paragraph, not both. The most common bad pattern is `…-bullets-paragraph`; this is rejected by the layout audit. If the slide needs a closing thought after bullets, use a `callout` or `highlight`, not a paragraph.
+
+12. **`paragraph` blocks ≤ 60 words.** Long prose belongs in `speaker_notes`, not on the slide.
+
+13. **HARD CAP: 4–5 blocks total**, including the eyebrow and heading. A slide with 4 strong blocks beats one with 8 weak ones. **Never emit more than 5 blocks.** If you're tempted to add a 6th, delete the weakest existing block instead.
+
+14. **Vary the slide shape across the deck.** Do not repeat the same `[type1, type2, type3, ...]` sequence on consecutive slides. If the previous slide used `eyebrow-heading-hero_stat-bullets`, the next data-heavy slide should pick a different shape such as `eyebrow-heading-chart-callout` or `eyebrow-heading-metric_row-highlight`. Variety is part of the contract.
+
+15. **Block-type budget by layout** (treat as a default; override only with a strong reason):
+   - `cover` → `eyebrow + heading + subheading` (3 blocks, no citations).
+   - `problem` / `risks` → `eyebrow + heading + callout(warn) + bullets`.
+   - `market` / `metrics` / `traction` / `results` → `eyebrow + heading + hero_stat + chart` OR `eyebrow + heading + chart + metric_row`. No `bullets` and no `paragraph` here — let the data carry it.
+   - `comparison` / `competition` / `segments` → `eyebrow + heading + table` OR `eyebrow + heading + table + highlight`.
+   - `solution` / `architecture` / `roadmap` → `eyebrow + heading + diagram + callout`.
+   - `team` → `eyebrow + heading + image + bullets`.
+   - `ask` / `recommendations` → `eyebrow + heading + metric_row + callout(success)`.
+   - `closing` → `eyebrow + heading + quote + bullets`.
 
 # Layout-block contract (overrides density if both apply)
 
@@ -92,3 +110,11 @@ A downstream validator scans every chart value, table cell, hero_stat value, and
 - No hedging on the slide itself ("may", "could", "should be") unless a signal quotes it verbatim. Assert what sources prove.
 - No markdown in text fields. Plain strings only.
 - No `image` blocks (renderer fetches images separately).
+
+# Optional polish on block props
+
+Any block may carry an optional `props.anim` string for an entry animation:
+
+- `fade-up | fade-in | slide-in-left | slide-in-right | zoom-in | reveal | stagger | typewriter`
+
+Use sparingly — at most one or two animated blocks per slide. Pick `fade-up` for hero_stat / hero values, `slide-in-left` / `slide-in-right` for diagrams + comparisons, `stagger` for bullets / metric_row, `zoom-in` for tables. Skip animations on `cover` slides — the first slide should land still.
