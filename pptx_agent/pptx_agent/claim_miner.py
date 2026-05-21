@@ -103,10 +103,24 @@ def _is_too_generic(sentence: str) -> bool:
     if not lower or len(lower) < 24:
         return True
     bad_phrases = (
+        # Meta / hedge template prose.
         "use real data", "should be", "needs to", "the deck should", "use source",
         "this slide", "should explain", "should describe", "where available",
         "if available", "when available", "to be added", "tbd", "placeholder",
         "should clearly", "needs to clearly",
+        # Site chrome / nav / cookie / upload boilerplate that leaks through
+        # the HTML stripper when sites bury content under marketing UI.
+        # Without this guard the miner picks "Read more Download 0 ratings..."
+        # as a top-scoring claim and the LLM uses it as a slide title.
+        "read more", "download free", "sign in", "sign up", "log in",
+        "subscribe", "newsletter", "toggle navigation", "skip to content",
+        "accept cookies", "accept all cookies", "cookie policy", "privacy policy",
+        "click here", "learn more", "all rights reserved", "terms of use",
+        "terms of service", "powered by", "upload", "share this", "copy link",
+        "0 ratings", "0% found", "related topics", "recommended for you",
+        "you may also like", "follow us", "print page", "save for later",
+        "full description", "uploaded by", "create account", "free for 30 days",
+        "toggle navigation english", "main menu",
     )
     return any(p in lower for p in bad_phrases)
 
