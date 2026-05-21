@@ -12,23 +12,39 @@ import { ThemePicker } from "./ThemePicker";
 
 interface Props {
   disabled: boolean;
+  // When true, the form is acting as a follow-up chat box (a deck already
+  // exists). We clear the prompt textarea after submit and use a leaner
+  // placeholder so the user sees the composer accepts feedback messages.
+  editMode?: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>, prompt: string, slideCount: number, theme: string) => void;
   theme: string;
   onThemeChange: (name: string) => void;
 }
 
-export function PromptForm({ disabled, onSubmit, theme, onThemeChange }: Props) {
+export function PromptForm({ disabled, editMode, onSubmit, theme, onThemeChange }: Props) {
   const [prompt, setPrompt] = useState("Create a 10-slide pitch deck for our AI platform.");
   const [slideCount, setSlideCount] = useState(10);
   const [themesOpen, setThemesOpen] = useState(false);
 
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    onSubmit(event, prompt, slideCount, theme);
+    if (editMode) {
+      // After follow-up message, clear the box so the next instruction can
+      // be typed cleanly. Initial-deck prompts stay so the user can tweak
+      // and re-submit.
+      setPrompt("");
+    }
+  };
+
   return (
     <form
       className="prompt-form composer-pill"
-      onSubmit={(event) => onSubmit(event, prompt, slideCount, theme)}
+      onSubmit={handleSubmit}
     >
       <div className="composer-toprow">
-        <span className="composer-mode-chip">AGENT MODE</span>
+        <span className="composer-mode-chip">
+          {editMode ? "EDIT MODE" : "AGENT MODE"}
+        </span>
       </div>
 
       <textarea
@@ -38,7 +54,11 @@ export function PromptForm({ disabled, onSubmit, theme, onThemeChange }: Props) 
         value={prompt}
         onChange={(event) => setPrompt(event.target.value)}
         disabled={disabled}
-        placeholder="Describe the deck — I'll research, plan, and draft each slide."
+        placeholder={
+          editMode
+            ? "Edit a slide ('change the chart to blue', 'add 2024 numbers to slide 3'), or start a fresh deck ('now make a new deck about X')."
+            : "Describe the deck — I'll research, plan, and draft each slide."
+        }
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
