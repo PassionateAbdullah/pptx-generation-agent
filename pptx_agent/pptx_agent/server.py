@@ -102,6 +102,9 @@ def _make_handler(settings: Settings):
             if "/slides/" in path and path.endswith("/regenerate") and path.startswith("/api/jobs/"):
                 self._regenerate_slide(path)
                 return
+            if path.startswith("/api/jobs/") and path.endswith("/edit"):
+                self._edit_stream(path)
+                return
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
         def do_PATCH(self) -> None:  # noqa: N802
@@ -360,6 +363,129 @@ def _make_handler(settings: Settings):
             except Exception as exc:  # noqa: BLE001
                 traceback.print_exc()
                 self._write_sse({"type": "error", "message": str(exc)})
+
+        def _edit_stream(self, path: str) -> None:
+            """POST /api/jobs/<id>/edit  body: {message, active_slide_number}
+
+            Classifies the message; on edit intent runs the LLM edit flow
+            and streams SSE events. On clarify returns one SSE event then
+            closes. On new returns a single ``redirect_new`` event so the
+            frontend can re-invoke /api/generate/stream cleanly.
+            """
+            parts = path.strip("/").split("/")
+            # /api/jobs/<job_id>/edit  → 4 segments
+            if len(parts) != 4 or parts[:2] != ["api", "jobs"] or parts[3] != "edit":
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
+            job_dir = (settings.output_dir / job_id).resolve()
+            try:
+                job_dir.relative_to(settings.output_dir.resolve())
+            except ValueError:
+                self._send_json({"error": "Invalid job."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not job_dir.exists():
+                self._send_json({"error": "Job not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            try:
+                payload = self._read_json()
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"Bad JSON: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            message = str(payload.get("message") or "").strip()
+            if not message:
+                self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                active_slide = int(payload["active_slide_number"]) if payload.get("active_slide_number") else None
+            except (TypeError, ValueError):
+                active_slide = None
+
+            try:
+                deck = read_json(job_dir / "deck.json")
+            except FileNotFoundError:
+                self._send_json({"error": "deck.json missing"}, status=HTTPStatus.NOT_FOUND)
+                return
+            research = deck.get("research") or {}
+
+            from .intent import classify_intent
+            from .slide_edit import iter_edit_slide
+            from .llm import LLMClient
+
+            llm = LLMClient(settings)
+            deck_summary = {
+                "title": deck.get("title", ""),
+                "topic": deck.get("topic", ""),
+                "slide_count": deck.get("slide_count"),
+                "slides": [
+                    {"number": s.get("number"), "title": s.get("title")}
+                    for s in (deck.get("slides") or [])
+                ],
+            }
+            intent = classify_intent(
+                message=message,
+                has_active_job=True,
+                active_slide_number=active_slide,
+                deck_summary=deck_summary,
+                llm=llm,
+            )
+
+            self._begin_sse()
+            self._write_sse({"type": "intent_classified", **intent.to_dict()})
+
+            if intent.intent == "new":
+                self._write_sse({
+                    "type": "redirect_new",
+                    "message": message,
+                    "reason": intent.reason,
+                })
+                return
+            if intent.intent == "clarify":
+                self._write_sse({
+                    "type": "intent_clarify",
+                    "question": intent.clarify_question or "Which slide should I edit?",
+                    "slides": [
+                        {"number": s.get("number"), "title": s.get("title")}
+                        for s in (deck.get("slides") or [])
+                    ],
+                })
+                return
+
+            target = intent.target_slide or active_slide
+            if target is None:
+                self._write_sse({
+                    "type": "intent_clarify",
+                    "question": "Which slide should I edit?",
+                    "slides": [
+                        {"number": s.get("number"), "title": s.get("title")}
+                        for s in (deck.get("slides") or [])
+                    ],
+                })
+                return
+
+            try:
+                for event in iter_edit_slide(deck, target, message, research, settings, llm):
+                    if not self._write_sse(event):
+                        return
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self._write_sse({"type": "error", "message": str(exc)})
+                return
+
+            # Persist + re-render only the edited slide.
+            try:
+                write_deck_artifacts(deck, job_dir, research, only_slides=[target])
+                self._write_sse({
+                    "type": "edit_persisted",
+                    "slide_number": target,
+                    "slide_url": f"/api/jobs/{job_id}/slide-{target:02d}.html",
+                    "html_url": f"/api/jobs/{job_id}/slides.html",
+                    "download_url": f"/api/jobs/{job_id}/deck.pptx",
+                })
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                self._write_sse({"type": "error", "message": f"persist failed: {exc}"})
 
         def _replay_events_sse(self, path: str) -> None:
             parts = path.strip("/").split("/")
