@@ -69,9 +69,13 @@ def load_settings(root: Path) -> Settings:
     except ValueError:
         max_results_per_query = 4
     try:
-        max_source_chars = max(300, min(4000, int(_env("MAX_SOURCE_CHARS", "1400"))))
+        # Ceiling matches pptx_agent.fetch._MAX_CHARS_CEILING so the new
+        # fetch_url helper can pull a full article body when one is
+        # available. Default 6000 is enough for most pages without blowing
+        # the LLM context budget downstream.
+        max_source_chars = max(300, min(10000, int(_env("MAX_SOURCE_CHARS", "6000"))))
     except ValueError:
-        max_source_chars = 1400
+        max_source_chars = 6000
 
     output_dir = root / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
