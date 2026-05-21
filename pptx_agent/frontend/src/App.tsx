@@ -60,8 +60,30 @@ export function App() {
     pickedTheme: string,
   ) => {
     event.preventDefault();
+    // Follow-up messages route to /edit when a job is already active.
+    // The "New task" rail button calls stream.reset() and clears jobId,
+    // which falls back to /generate/stream.
+    if (job.jobId) {
+      await stream.edit({
+        job_id: job.jobId,
+        message: prompt,
+        active_slide_number: previewingSlide ?? editingSlide ?? null,
+      });
+      return;
+    }
     await stream.start({ prompt, slide_count: slideCount, theme: pickedTheme });
   };
+
+  // If the edit endpoint says the message is actually a new-deck request,
+  // restart the pipeline using the original generate/stream entry point.
+  useEffect(() => {
+    const last = stream.events[stream.events.length - 1];
+    if (!last || last.type !== "redirect_new") return;
+    const msg = (last as { message?: string }).message || "";
+    if (!msg) return;
+    stream.reset();
+    void stream.start({ prompt: msg, slide_count: 10, theme });
+  }, [stream.events, stream, theme]);
 
   const editingSlideData = editingSlide !== null ? job.slides.get(editingSlide) ?? null : null;
   const previewingSlideData =
@@ -133,6 +155,7 @@ export function App() {
             job={job}
             onOpenSlide={(n) => setPreviewingSlide(n)}
             onPresent={(start) => setPresentingFromIndex(start)}
+            onClarifyPick={(n) => setPreviewingSlide(n)}
           />
           {stream.error && <div className="error-banner">{stream.error}</div>}
         </div>
@@ -140,6 +163,7 @@ export function App() {
         <div className="chat-composer">
           <PromptForm
             disabled={stream.status === "running"}
+            editMode={Boolean(job.jobId)}
             onSubmit={onSubmit}
             theme={theme}
             onThemeChange={setTheme}
