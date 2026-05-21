@@ -41,6 +41,14 @@ export interface FileRecord {
   url?: string;
 }
 
+export interface EditFeedEntry {
+  ts: number;
+  kind: "intent" | "edit" | "query" | "clarify" | "redirect";
+  text: string;
+  slide?: number;
+  url?: string;
+}
+
 export interface JobState {
   jobId: string | null;
   prompt: string;
@@ -68,6 +76,10 @@ export interface JobState {
   citationsBySlide: Map<number, string[]>;
   /** source_id -> [slide_number, ...] inverse */
   slidesBySource: Map<string, number[]>;
+  /** Live feed of edit / intent / targeted-query events for the chat UI. */
+  editFeed: EditFeedEntry[];
+  /** Pending clarify question + slide choices the UI should surface. */
+  pendingClarify: { question: string; slides: Array<{ number: number; title: string }> } | null;
 }
 
 export function emptyJob(): JobState {
@@ -98,6 +110,8 @@ export function emptyJob(): JobState {
     sourcesById: new Map(),
     citationsBySlide: new Map(),
     slidesBySource: new Map(),
+    editFeed: [],
+    pendingClarify: null,
   };
 }
 
@@ -255,6 +269,12 @@ export function reduce(prev: JobState, event: AgentEvent): JobState {
       state.outline = [...state.outline, event];
       return state;
     }
+    case "slide_edited": {
+      const slides = new Map(state.slides);
+      slides.set(event.number, event.slide);
+      state.slides = slides;
+      return state;
+    }
     case "slide_detail": {
       const slides = new Map(state.slides);
       slides.set(event.number, event.slide);
@@ -288,6 +308,100 @@ export function reduce(prev: JobState, event: AgentEvent): JobState {
       state.status = "done";
       state.downloadUrl = event.download_url;
       state.htmlUrl = event.html_url;
+      return state;
+    }
+    case "intent_classified": {
+      state.pendingClarify = null;
+      const target = event.target_slide ? ` slide ${event.target_slide}` : "";
+      const text =
+        event.intent === "edit"
+          ? `Editing${target}…${event.needs_research ? " (with extra research)" : ""}`
+          : event.intent === "new"
+            ? "Starting a new deck — your previous one is still saved."
+            : event.clarify_question || "Which slide?";
+      state.editFeed = [
+        ...state.editFeed,
+        { ts: event.ts, kind: "intent", text, slide: event.target_slide ?? undefined },
+      ];
+      return state;
+    }
+    case "intent_clarify": {
+      state.pendingClarify = { question: event.question, slides: event.slides };
+      state.editFeed = [
+        ...state.editFeed,
+        { ts: event.ts, kind: "clarify", text: event.question },
+      ];
+      return state;
+    }
+    case "redirect_new": {
+      state.editFeed = [
+        ...state.editFeed,
+        { ts: event.ts, kind: "redirect", text: `Restarting as new deck: "${event.message.slice(0, 80)}"` },
+      ];
+      return state;
+    }
+    case "edit_started": {
+      state.editFeed = [
+        ...state.editFeed,
+        {
+          ts: event.ts,
+          kind: "edit",
+          text: `Edit started: ${event.instruction.slice(0, 100)}`,
+          slide: event.slide_number,
+        },
+      ];
+      return state;
+    }
+    case "targeted_query": {
+      state.editFeed = [
+        ...state.editFeed,
+        {
+          ts: event.ts,
+          kind: "query",
+          text: `Searched: "${event.query.slice(0, 80)}" — ${event.hits} hit(s)`,
+          slide: event.slide,
+        },
+      ];
+      return state;
+    }
+    case "edit_finished": {
+      state.editFeed = [
+        ...state.editFeed,
+        {
+          ts: event.ts,
+          kind: "edit",
+          text: event.ok
+            ? `Slide ${event.slide_number} updated (${event.block_count ?? "—"} block(s)).`
+            : `Slide ${event.slide_number} edit failed.`,
+          slide: event.slide_number,
+        },
+      ];
+      return state;
+    }
+    case "edit_persisted": {
+      state.editFeed = [
+        ...state.editFeed,
+        {
+          ts: event.ts,
+          kind: "edit",
+          text: `Slide ${event.slide_number} re-rendered.`,
+          slide: event.slide_number,
+          url: event.slide_url,
+        },
+      ];
+      state.downloadUrl = event.download_url;
+      state.htmlUrl = event.html_url;
+      return state;
+    }
+    case "slide_html_ready": {
+      // Track URL on the file list so other UI (e.g. drawer) can refresh.
+      const files = [...state.files];
+      const path = `slide-${event.number.toString().padStart(2, "0")}.html`;
+      const existing = files.findIndex((f) => f.path === path);
+      const rec = { path, url: event.url };
+      if (existing >= 0) files[existing] = rec;
+      else files.push(rec);
+      state.files = files;
       return state;
     }
     case "error": {
