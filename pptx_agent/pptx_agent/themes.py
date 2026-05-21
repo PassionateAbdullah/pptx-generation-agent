@@ -201,6 +201,80 @@ THEMES: dict[str, Theme] = {
 }
 
 
+# Catalog of html-ppt themes vendored under web/dist/static/html-ppt/themes/.
+# Each entry maps the theme's filename (without .css) to a friendly label +
+# light/dark mode. Source of truth is the file list itself — these labels
+# are display only.
+HTML_PPT_THEMES: dict[str, tuple[str, str]] = {
+    "minimal-white": ("Minimal White", "light"),
+    "editorial-serif": ("Editorial Serif", "light"),
+    "soft-pastel": ("Soft Pastel", "light"),
+    "sharp-mono": ("Sharp Mono", "light"),
+    "arctic-cool": ("Arctic Cool", "light"),
+    "sunset-warm": ("Sunset Warm", "light"),
+    "catppuccin-latte": ("Catppuccin Latte", "light"),
+    "catppuccin-mocha": ("Catppuccin Mocha", "dark"),
+    "dracula": ("Dracula", "dark"),
+    "tokyo-night": ("Tokyo Night", "dark"),
+    "nord": ("Nord", "dark"),
+    "solarized-light": ("Solarized Light", "light"),
+    "gruvbox-dark": ("Gruvbox Dark", "dark"),
+    "rose-pine": ("Rosé Pine", "dark"),
+    "neo-brutalism": ("Neo Brutalism", "light"),
+    "glassmorphism": ("Glassmorphism", "light"),
+    "bauhaus": ("Bauhaus", "light"),
+    "swiss-grid": ("Swiss Grid", "light"),
+    "terminal-green": ("Terminal Green", "dark"),
+    "xiaohongshu-white": ("Xiaohongshu White", "light"),
+    "rainbow-gradient": ("Rainbow Gradient", "light"),
+    "aurora": ("Aurora", "dark"),
+    "blueprint": ("Blueprint", "dark"),
+    "memphis-pop": ("Memphis Pop", "light"),
+    "cyberpunk-neon": ("Cyberpunk Neon", "dark"),
+    "y2k-chrome": ("Y2K Chrome", "light"),
+    "retro-tv": ("Retro TV", "dark"),
+    "japanese-minimal": ("Japanese Minimal", "light"),
+    "vaporwave": ("Vaporwave", "dark"),
+    "midcentury": ("Mid-century", "light"),
+    "corporate-clean": ("Corporate Clean", "light"),
+    "academic-paper": ("Academic Paper", "light"),
+    "news-broadcast": ("News Broadcast", "dark"),
+    "pitch-deck-vc": ("VC Pitch Deck", "dark"),
+    "magazine-bold": ("Magazine Bold", "light"),
+    "engineering-whiteprint": ("Engineering Whiteprint", "light"),
+}
+
+# Our 5 legacy theme names alias to the closest html-ppt theme so existing
+# decks keep their look even after we swapped the rendering shell.
+_LEGACY_ALIAS: dict[str, str] = {
+    "betopia": "soft-pastel",
+    "slate": "corporate-clean",
+    "sand": "sunset-warm",
+    "mono": "sharp-mono",
+    "midnight": "dracula",
+    "pitch": "pitch-deck-vc",
+}
+
+
+def html_ppt_theme_filename(name: str | None) -> str:
+    """Resolve a theme name (legacy or html-ppt) to its CSS filename.
+
+    Always returns a valid ``<name>.css`` string. Falls back to the
+    default theme when ``name`` is None / unknown.
+    """
+    if not name:
+        name = DEFAULT_THEME
+    # html-ppt theme names map to their own file directly.
+    if name in HTML_PPT_THEMES:
+        return f"{name}.css"
+    # Our legacy 5 alias to an html-ppt theme.
+    if name in _LEGACY_ALIAS:
+        return f"{_LEGACY_ALIAS[name]}.css"
+    # Default fallback.
+    default_name = _LEGACY_ALIAS.get(DEFAULT_THEME, DEFAULT_THEME)
+    return f"{default_name}.css"
+
+
 def get_theme(name: str | None) -> Theme:
     if name and name in THEMES:
         return THEMES[name]
