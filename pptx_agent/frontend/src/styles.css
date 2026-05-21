@@ -2405,3 +2405,67 @@ button { font: inherit; cursor: pointer; }
   word-break: break-word;
 }
 .chat-error-banner p { margin: 4px 0 0; }
+
+.edit-feed {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.edit-feed-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+}
+.edit-feed-row.edit-feed-edit { border-color: rgba(233, 107, 42, 0.35); background: var(--accent-soft); }
+.edit-feed-row.edit-feed-query { border-color: rgba(91, 42, 139, 0.30); }
+.edit-feed-row.edit-feed-clarify { border-color: rgba(217, 143, 31, 0.45); }
+.edit-feed-row.edit-feed-redirect { border-color: rgba(201, 87, 70, 0.35); }
+.edit-feed-icon { font-size: 14px; line-height: 1; }
+.edit-feed-text { color: var(--ink); }
+.edit-feed-link { font-size: 11px; color: var(--accent); }
+
+.clarify-card {
+  margin-top: 10px;
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.clarify-question { margin: 0 0 10px; font-weight: 600; color: var(--ink); }
+.clarify-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.clarify-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border: 1px solid rgba(233, 107, 42, 0.35);
+  font-size: 13px;
+  cursor: pointer;
+}
+.clarify-chip:hover { background: var(--accent); color: white; border-color: var(--accent); }
+.clarify-chip-num {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.6);
+  color: var(--accent-strong);
+  font-weight: 800;
+  font-size: 11px;
+}
+.clarify-chip-title { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
