@@ -893,5 +893,348 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("density-too-high", codes)
 
 
+    # ----- Edit flow: intent classifier + slide edit + per-slide rebuild -----
+
+    def test_classify_intent_treats_no_job_as_new(self):
+        from pptx_agent.intent import classify_intent
+        out = classify_intent("change the chart on slide 3", has_active_job=False)
+        self.assertEqual(out.intent, "new")
+
+    def test_classify_intent_edit_with_slide_target_in_message(self):
+        from pptx_agent.intent import classify_intent
+        out = classify_intent(
+            "change the chart on slide 3 to use 2024 data",
+            has_active_job=True,
+            active_slide_number=None,
+        )
+        self.assertEqual(out.intent, "edit")
+        self.assertEqual(out.target_slide, 3)
+        self.assertTrue(out.needs_research)
+
+    def test_classify_intent_clarify_when_no_target(self):
+        from pptx_agent.intent import classify_intent
+        out = classify_intent(
+            "change the color",
+            has_active_job=True,
+            active_slide_number=None,
+        )
+        self.assertEqual(out.intent, "clarify")
+
+    def test_classify_intent_uses_active_slide_when_target_implicit(self):
+        from pptx_agent.intent import classify_intent
+        out = classify_intent(
+            "make this slide brighter",
+            has_active_job=True,
+            active_slide_number=4,
+        )
+        self.assertEqual(out.intent, "edit")
+        self.assertEqual(out.target_slide, 4)
+
+    def test_classify_intent_strong_new_signal_beats_edit_verbs(self):
+        from pptx_agent.intent import classify_intent
+        out = classify_intent(
+            "now make a new deck about climate change",
+            has_active_job=True,
+            active_slide_number=2,
+        )
+        self.assertEqual(out.intent, "new")
+
+    def test_slide_edit_needs_research_regex(self):
+        from pptx_agent.slide_edit import needs_research
+        self.assertTrue(needs_research("add the latest 2024 numbers"))
+        self.assertTrue(needs_research("cite more recent sources"))
+        self.assertFalse(needs_research("make the title bigger"))
+
+    def test_write_deck_artifacts_only_slides_skips_others(self):
+        from pptx_agent.pipeline import write_deck_artifacts
+        from pptx_agent.planner import build_deck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = self.settings(root)
+            research = Researcher(settings).run("briefing on solar", "solar")
+            deck, _ = build_deck("briefing on solar", 5, research, settings)
+            job_dir = root / "j-edit"
+            write_deck_artifacts(deck, job_dir, research)
+            # Snapshot mtimes for all per-slide HTML files.
+            files = {n: (job_dir / f"slide-{n:02d}.html") for n in range(1, 6)}
+            import time as _t
+            mtimes_before = {n: p.stat().st_mtime_ns for n, p in files.items()}
+            _t.sleep(0.02)
+            # Re-render only slide 3.
+            write_deck_artifacts(deck, job_dir, research, only_slides=[3])
+            mtimes_after = {n: p.stat().st_mtime_ns for n, p in files.items()}
+            for n in (1, 2, 4, 5):
+                self.assertEqual(
+                    mtimes_before[n], mtimes_after[n],
+                    f"slide {n} html was rewritten despite only_slides=[3]",
+                )
+            self.assertGreater(mtimes_after[3], mtimes_before[3])
+
+
+    # ----- fetch_url helper (full-page fetcher) -----
+
+    def test_fetch_url_rejects_non_http_scheme(self):
+        from pptx_agent.fetch import fetch_url
+        out = fetch_url("ftp://example.com/x")
+        self.assertTrue(out.startswith("[fetch_url error: only http/https"))
+
+    def test_fetch_url_rejects_binary_extension(self):
+        from pptx_agent.fetch import fetch_url
+        out = fetch_url("https://example.com/report.pdf")
+        self.assertTrue(out.startswith("[fetch_url: skipped binary extension"))
+
+    def test_fetch_url_body_returns_tuple_on_error(self):
+        from pptx_agent.fetch import fetch_url_body
+        body, err = fetch_url_body("ftp://example.com/y")
+        self.assertEqual(body, "")
+        self.assertIsNotNone(err)
+        self.assertIn("only http/https", err)
+
+    def test_fetch_url_max_chars_truncates_and_prefixes(self):
+        # Hit a deterministic local-style success path by mocking urlopen.
+        from unittest import mock
+        from pptx_agent.fetch import fetch_url
+
+        class FakeHeaders:
+            def get(self, key, default=""):
+                if key.lower() == "content-type":
+                    return "text/plain; charset=utf-8"
+                return default
+
+            def get_content_charset(self):
+                return "utf-8"
+
+        class FakeResp:
+            status = 200
+            headers = FakeHeaders()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return (b"alpha " * 500)[:n]
+
+        with mock.patch("urllib.request.urlopen", return_value=FakeResp()):
+            out = fetch_url("https://example.com/page", max_chars=600)
+        self.assertTrue(
+            out.startswith("Full content from https://example.com/page:"),
+            f"got: {out[:120]}",
+        )
+        self.assertIn("content truncated at 600 chars", out)
+
+
+    # ----- Boilerplate / site-chrome filters -----
+
+    def test_drop_boilerplate_strips_nav_and_cookie_lines(self):
+        from pptx_agent.fetch import _drop_boilerplate
+        raw = (
+            "Sign in. Upload a document. "
+            "Bangladesh's exports reached $46 billion in 2023, led by ready-made garments. "
+            "0 ratings 0% found this document useful. Toggle navigation English. "
+            "Read more Download free for 30 days. "
+            "Total trade volume grew 12% over the prior year."
+        )
+        cleaned = _drop_boilerplate(raw)
+        self.assertIn("exports reached $46 billion", cleaned)
+        self.assertIn("trade volume grew 12%", cleaned)
+        self.assertNotIn("Sign in", cleaned)
+        self.assertNotIn("Toggle navigation", cleaned)
+        self.assertNotIn("Download free", cleaned)
+        self.assertNotIn("0 ratings", cleaned)
+
+    def test_claim_miner_rejects_site_chrome_sentences(self):
+        from pptx_agent.claim_miner import mine_claims
+        research = {
+            "sources": [{
+                "source_id": "S1",
+                "excerpt": (
+                    "Read more Download free for 30 days. Sign in Upload Language EN. "
+                    "Bangladesh exports reached $46 billion in 2023."
+                ),
+                "snippet": "",
+            }],
+            "insights": [],
+        }
+        claims = mine_claims(research)
+        text_blob = " | ".join(c.text for c in claims).lower()
+        self.assertNotIn("download free", text_blob)
+        self.assertNotIn("toggle navigation", text_blob)
+        self.assertNotIn("sign in upload", text_blob)
+        # Real claim survives.
+        self.assertTrue(any("$46 billion" in c.text for c in claims))
+
+    def test_extract_slide_count_handles_page_synonym(self):
+        from pptx_agent.planner import extract_slide_count
+        self.assertEqual(extract_slide_count("build 10 page deck about X"), 10)
+        self.assertEqual(extract_slide_count("Make a 7-page report"), 7)
+        self.assertEqual(extract_slide_count("Create a 12-slide pitch"), 12)
+
+    def test_extract_topic_strips_build_n_page(self):
+        from pptx_agent.planner import extract_topic
+        topic = extract_topic("Import export of Bangladesh in recent years, build 10 page")
+        self.assertNotIn("build", topic.lower())
+        self.assertNotIn("10 page", topic.lower())
+        self.assertNotIn("10page", topic.lower())
+        self.assertIn("bangladesh", topic.lower())
+
+    def test_deck_audit_flags_title_that_looks_like_nav_boilerplate(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "T",
+            "research": {"sources": []},
+            "slides": [{
+                "number": 3, "layout": "market", "citations": [],
+                "title": "Read more Download 0 ratings 0% found this document useful",
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "y", "level": 1}},
+                    {"type": "hero_stat", "props": {"value": "$46B", "label": "exports"}},
+                ],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("title-looks-like-site-chrome", codes)
+
+
+    # ----- Analyst mode + topic alignment -----
+
+    def test_deck_audit_flags_off_topic_slide(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "Bangladesh trade",
+            "topic": "import export of Bangladesh in recent years",
+            "research": {"sources": []},
+            "slides": [{
+                "number": 2, "layout": "solution",
+                "title": "Best skincare routine for dry skin",
+                "subtitle": "Daily face care tips.",
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "Skincare routine", "level": 1}},
+                    {"type": "callout", "props": {"tone": "info", "text": "Moisturize daily"}},
+                ],
+                "bullets": ["Use a gentle cleanser", "Apply SPF 30 every morning"],
+                "citations": [],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertIn("off-topic-slide", codes)
+
+    def test_deck_audit_does_not_flag_on_topic_slide(self):
+        from pptx_agent.deck_audit import audit_deck
+        deck = {
+            "title": "Bangladesh trade",
+            "topic": "import export Bangladesh garments trade",
+            "research": {"sources": []},
+            "slides": [{
+                "number": 2, "layout": "solution",
+                "title": "Bangladesh ready-made garments exports lead trade",
+                "subtitle": "Garments make up most Bangladesh exports.",
+                "blocks": [
+                    {"type": "eyebrow", "props": {"text": "x"}},
+                    {"type": "heading", "props": {"text": "Bangladesh garment exports", "level": 1}},
+                    {"type": "callout", "props": {"tone": "info", "text": "exports rose 12%"}},
+                ],
+                "bullets": ["Bangladesh garments grew 12% YoY"],
+                "citations": [],
+            }],
+        }
+        codes = {f["code"] for f in audit_deck(deck)["findings"]}
+        self.assertNotIn("off-topic-slide", codes)
+
+    def test_analyst_iter_emits_slide_authored_per_slide(self):
+        from unittest.mock import MagicMock
+        from pptx_agent.slide_author import iter_analyst_authoring_events
+        # Patch analyst_pass via the module so the test stays cheap.
+        from pptx_agent import analyst as _analyst
+
+        def fake_analyst_pass(entry, *a, **kw):
+            return {
+                "number": int(entry["number"]),
+                "id": f"slide-{entry['number']}",
+                "layout": "solution",
+                "title": f"Authored {entry['number']}",
+                "subtitle": "",
+                "eyebrow": "",
+                "bullets": [],
+                "metrics": [],
+                "speaker_notes": "",
+                "citations": [],
+                "blocks": [{"id": "x", "type": "heading", "props": {"text": "x"}}],
+                "accent_variant": 0,
+            }
+        original = _analyst.analyst_pass
+        _analyst.analyst_pass = fake_analyst_pass
+        try:
+            outline = {"slides": [{"number": i, "role": "solution", "layout": "solution"}
+                                  for i in range(1, 4)]}
+            llm = MagicMock(spec=["complete_json"])
+            events = list(iter_analyst_authoring_events(outline, {}, {}, llm, None))
+            authored = [e for e in events if e.get("type") == "slide_authored"]
+            self.assertEqual(len(authored), 3)
+            self.assertEqual([a["number"] for a in authored], [1, 2, 3])
+            self.assertEqual(events[-1]["type"], "slides_ready")
+        finally:
+            _analyst.analyst_pass = original
+
+
+    # ----- html-ppt rendering shell -----
+
+    def test_html_renderer_links_vendored_html_ppt_assets(self):
+        from pptx_agent.html_renderer import render_single_slide_html
+        deck = {
+            "title": "T", "topic": "x", "theme": "betopia",
+            "slides": [{
+                "number": 1, "layout": "cover", "title": "Hello",
+                "subtitle": "", "eyebrow": "", "citations": [],
+                "bullets": [], "metrics": [],
+                "blocks": [
+                    {"id": "x", "type": "heading", "props": {"text": "Hello", "level": 1}},
+                ],
+            }],
+        }
+        html = render_single_slide_html(deck, deck["slides"][0])
+        self.assertIn("/static/html-ppt/base.css", html)
+        self.assertIn('id="theme-link"', html)
+        self.assertIn("/static/html-ppt/themes/", html)
+        self.assertIn("/static/html-ppt/token-bridge.css", html)
+        self.assertIn("/static/html-ppt/runtime.js", html)
+        self.assertIn("/static/html-ppt/animations/animations.css", html)
+
+    def test_theme_bridge_aliases_legacy_names_to_html_ppt_files(self):
+        from pptx_agent.themes import html_ppt_theme_filename
+        self.assertEqual(html_ppt_theme_filename("betopia"), "soft-pastel.css")
+        self.assertEqual(html_ppt_theme_filename("midnight"), "dracula.css")
+        self.assertEqual(html_ppt_theme_filename("slate"), "corporate-clean.css")
+        self.assertEqual(html_ppt_theme_filename("tokyo-night"), "tokyo-night.css")
+        # Unknown name falls back to default's alias.
+        out = html_ppt_theme_filename("does-not-exist")
+        self.assertTrue(out.endswith(".css"))
+
+    def test_block_render_carries_data_anim_when_prop_set(self):
+        from pptx_agent.html_renderer import render_single_slide_html
+        deck = {
+            "title": "T", "topic": "x", "theme": "betopia",
+            "slides": [{
+                "number": 2, "layout": "metrics",
+                "title": "Stats", "subtitle": "", "eyebrow": "",
+                "citations": [], "bullets": [], "metrics": [],
+                "animation": "fade-up",
+                "blocks": [
+                    {"id": "h", "type": "heading",
+                     "props": {"text": "Stats", "level": 1}},
+                    {"id": "m", "type": "hero_stat",
+                     "props": {"value": "$15B", "label": "TAM", "anim": "zoom-in"}},
+                ],
+            }],
+        }
+        html = render_single_slide_html(deck, deck["slides"][0])
+        self.assertIn('data-anim="fade-up"', html)
+        self.assertIn('data-anim="zoom-in"', html)
+
+
 if __name__ == "__main__":
     unittest.main()
