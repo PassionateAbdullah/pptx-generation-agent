@@ -1,0 +1,32 @@
+/* token-bridge.css — alias html-ppt's tokens to the names our backend
+   block CSS expects. See pptx_agent/html_renderer.py _block_css(). */
+
+:root {
+  --ink: var(--text-1);
+  --muted: var(--text-3);
+  --panel: var(--surface);
+  --panel-alt: var(--surface-2);
+  --line: var(--border);
+  --accent-strong: var(--accent-2);
+  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
+  --danger: var(--bad);
+  --ok: var(--good);
+  --shadow-sm: var(--shadow);
+  --shadow-md: var(--shadow-lg);
+  --font_display: var(--font-display);
+  --font_body: var(--font-sans);
+}
+
+.slide:not(.is-active) { display: block; }
+
+body[data-slide] main {
+  max-width: none;
+  padding: 0;
+}
+body[data-slide] .deck-stage { display: block; }
+body[data-slide] .deck-stage > .slide {
+  margin: 0;
+  width: 100%;
+  min-height: calc(100vh - 48px);
+  aspect-ratio: auto;
+}
