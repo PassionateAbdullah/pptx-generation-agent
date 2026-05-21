@@ -25,12 +25,17 @@ def write_deck_artifacts(
     deck: dict[str, Any],
     job_dir: Path,
     research: dict[str, Any] | None = None,
+    only_slides: list[int] | None = None,
 ) -> dict[str, str]:
     """Render and persist every artifact derived from a deck.
 
     Used by the initial pipeline run and by post-generation edits so that
     deck.json, slides.html, sources.md, structure, and slide-content markdown
     stay in lockstep with the in-memory deck.
+
+    ``only_slides`` (optional) limits per-slide ``slide-NN.html`` rewrites to
+    the listed slide numbers. Deck-level files (deck.json, slides.html,
+    audit.json, etc.) are always rewritten because they embed every slide.
     """
     research = research if research is not None else deck.get("research") or {}
     structure = deck_structure_text(deck)
@@ -60,9 +65,12 @@ def write_deck_artifacts(
     # Per-slide standalone HTML — viewable directly via
     # /api/jobs/<id>/slide-NN.html. Files live at the top of job_dir so they
     # pass the existing 4-part path dispatcher.
+    only_set = {int(n) for n in only_slides} if only_slides else None
     for slide in deck.get("slides", []):
         number = int(slide.get("number") or 0)
         if number <= 0:
+            continue
+        if only_set is not None and number not in only_set:
             continue
         slide_html = render_single_slide_html(deck, slide)
         (job_dir / f"slide-{number:02d}.html").write_text(slide_html, encoding="utf-8")
@@ -109,10 +117,59 @@ def iter_pipeline(
     if research is None:
         research = {"queries": [], "sources": [], "insights": [], "provider": "none"}
 
+    # Progressive per-slide HTML: as each slide_detail event streams, write
+    # that slide's standalone slide-NN.html and emit a file event so the
+    # drawer's iframe can show real rendered HTML the moment authoring
+    # finishes (instead of waiting for the whole deck to land).
+    progressive_deck: dict[str, Any] = {
+        "title": "",
+        "theme": theme or "",
+        "topic": topic,
+        "slides": [],
+    }
+    seen_slide_numbers: set[int] = set()
+
     deck: dict[str, Any] | None = None
     for event in iter_build_deck(prompt, slide_count, research, settings, theme=theme):
         yield event
-        if event.get("type") == "phase_end" and event.get("id") == PHASE_CONTENT:
+        etype = event.get("type")
+        if etype == "deck_meta":
+            progressive_deck["title"] = event.get("title", "")
+            progressive_deck["theme"] = event.get("theme", progressive_deck["theme"])
+        elif etype == "slide_detail" and event.get("slide"):
+            slide = event["slide"]
+            n = int(slide.get("number") or 0)
+            if n <= 0:
+                continue
+            # Insert/replace this slide in the progressive deck so the
+            # standalone HTML render carries fresh data.
+            existing = next(
+                (i for i, s in enumerate(progressive_deck["slides"]) if int(s.get("number") or 0) == n),
+                None,
+            )
+            if existing is None:
+                progressive_deck["slides"].append(slide)
+            else:
+                progressive_deck["slides"][existing] = slide
+            try:
+                slide_html = render_single_slide_html(progressive_deck, slide)
+                (job_dir / f"slide-{n:02d}.html").write_text(slide_html, encoding="utf-8")
+                first_time = n not in seen_slide_numbers
+                seen_slide_numbers.add(n)
+                yield make_event(
+                    "slide_html_ready",
+                    phase=PHASE_CONTENT,
+                    number=n,
+                    url=f"/api/jobs/{job_id}/slide-{n:02d}.html",
+                    first=first_time,
+                )
+            except Exception as exc:  # noqa: BLE001
+                yield make_event(
+                    "log",
+                    phase=PHASE_CONTENT,
+                    text=f"Progressive slide-{n} HTML write failed: {exc}",
+                )
+        if etype == "phase_end" and event.get("id") == PHASE_CONTENT:
             deck = event.get("result")
     if deck is None:
         yield make_event("error", phase=PHASE_CONTENT, message="Planner returned no deck.")
