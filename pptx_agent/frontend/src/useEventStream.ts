@@ -9,11 +9,18 @@ export interface StreamRequest {
 
 export type StreamStatus = "idle" | "running" | "done" | "error";
 
+export interface EditRequest {
+  job_id: string;
+  message: string;
+  active_slide_number?: number | null;
+}
+
 export interface UseEventStream {
   status: StreamStatus;
   error: string | null;
   events: AgentEvent[];
   start: (req: StreamRequest) => Promise<void>;
+  edit: (req: EditRequest) => Promise<void>;
   replay: (jobId: string) => Promise<void>;
   reset: () => void;
 }
@@ -85,6 +92,38 @@ export function useEventStream(onEvent?: (event: AgentEvent) => void): UseEventS
     [consume],
   );
 
+  const edit = useCallback(
+    async (req: EditRequest) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      // Keep prior events so chat thread shows the edit appended.
+      setError(null);
+      setStatus("running");
+      try {
+        const response = await fetch(
+          `/api/jobs/${encodeURIComponent(req.job_id)}/edit`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: req.message,
+              active_slide_number: req.active_slide_number ?? null,
+            }),
+            signal: controller.signal,
+          },
+        );
+        await consume(response);
+        setStatus("done");
+      } catch (err) {
+        if ((err as { name?: string }).name === "AbortError") return;
+        setError((err as Error).message);
+        setStatus("error");
+      }
+    },
+    [consume],
+  );
+
   const replay = useCallback(
     async (jobId: string) => {
       abortRef.current?.abort();
@@ -108,7 +147,7 @@ export function useEventStream(onEvent?: (event: AgentEvent) => void): UseEventS
     [consume],
   );
 
-  return { status, error, events, start, replay, reset };
+  return { status, error, events, start, edit, replay, reset };
 }
 
 function parseSseBlock(block: string): AgentEvent | null {
