@@ -21,6 +21,7 @@ interface Props {
   job: JobState;
   onOpenSlide?: (n: number) => void;
   onPresent?: (startIndex: number) => void;
+  onClarifyPick?: (slideNumber: number) => void;
 }
 
 const PHASE_LABELS: Record<PhaseId, string> = {
@@ -31,7 +32,7 @@ const PHASE_LABELS: Record<PhaseId, string> = {
   export: "Awaiting PPTX export",
 };
 
-export function ChatView({ job, onOpenSlide, onPresent }: Props) {
+export function ChatView({ job, onOpenSlide, onPresent, onClarifyPick }: Props) {
   const { themes } = useThemes();
   const themeName = (job.deckMeta as { theme?: string } | null)?.theme || "betopia";
   const activeTheme = themes.find((t) => t.name === themeName) || themes[0];
@@ -93,6 +94,53 @@ export function ChatView({ job, onOpenSlide, onPresent }: Props) {
         {job.phaseOrder.map((phaseId) => (
           <TaskCard key={phaseId} job={job} phaseId={phaseId} />
         ))}
+
+        {job.editFeed && job.editFeed.length > 0 && (
+          <ul className="edit-feed">
+            {job.editFeed.map((entry, i) => (
+              <li key={i} className={`edit-feed-row edit-feed-${entry.kind}`}>
+                <span className="edit-feed-icon" aria-hidden>
+                  {entry.kind === "intent" && "🎯"}
+                  {entry.kind === "edit" && "✏️"}
+                  {entry.kind === "query" && "🔍"}
+                  {entry.kind === "clarify" && "❓"}
+                  {entry.kind === "redirect" && "↻"}
+                </span>
+                <span className="edit-feed-text">{entry.text}</span>
+                {entry.url && (
+                  <a
+                    className="edit-feed-link"
+                    href={entry.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    open
+                  </a>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {job.pendingClarify && (
+          <div className="clarify-card" role="dialog" aria-label="Which slide?">
+            <p className="clarify-question">{job.pendingClarify.question}</p>
+            <div className="clarify-chips">
+              {job.pendingClarify.slides.map((s) => (
+                <button
+                  key={s.number}
+                  type="button"
+                  className="clarify-chip"
+                  onClick={() => onClarifyPick?.(s.number)}
+                  title={s.title}
+                >
+                  <span className="clarify-chip-num">{s.number}</span>
+                  <span className="clarify-chip-title">{s.title}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {orderedSlides.length > 0 && (
           <SlideOutlineCard
