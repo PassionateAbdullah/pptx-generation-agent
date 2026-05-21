@@ -11,6 +11,7 @@ from .hedge_filter import scrub_paragraph
 from .llm import LLMClient
 from .slide_author import (
     build_outline_llm,
+    iter_analyst_authoring_events,
     iter_authoring_events,
 )
 from .themes import DEFAULT_THEME, get_theme
@@ -18,10 +19,12 @@ from .utils import clamp, slugify
 
 
 def extract_slide_count(prompt: str, explicit_count: int | None = None) -> int:
-    """Resolve slide count from explicit arg or "<N>-slide" mention in prompt."""
+    """Resolve slide count from explicit arg or "<N>-slide"/"<N>-page" mention."""
     if explicit_count:
         return clamp(explicit_count, 1, 25)
-    match = re.search(r"\b(\d{1,2})\s*[- ]?\s*slides?\b", prompt, flags=re.IGNORECASE)
+    match = re.search(
+        r"\b(\d{1,2})\s*[- ]?\s*(?:slides?|pages?)\b", prompt, flags=re.IGNORECASE
+    )
     if match:
         return clamp(int(match.group(1)), 1, 25)
     return 12
@@ -81,6 +84,15 @@ def _clean_topic(text: str) -> str:
     out = text
     # "10-slide", "10 slide", "10 slides"
     out = re.sub(r"\b\d{1,2}\s*[- ]?\s*slides?\b", "", out, flags=re.IGNORECASE)
+    # "10 page", "10-pager", "10 page deck", "build 10 page" — users say
+    # "page" interchangeably with "slide". Strip the count + page word
+    # together so the topic doesn't trail off into "build 10 page".
+    out = re.sub(
+        r"\b(?:build|make|create|need|want|generate|draft|write)?\s*\d{1,2}\s*[- ]?\s*pages?(?:r)?\b",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
     out = re.sub(rf"\b(?:{_DECK_NOUNS})\b", "", out, flags=re.IGNORECASE)
     # "I need", "give me", "help me" etc. prefixes → drop.
     out = re.sub(
@@ -318,7 +330,42 @@ def iter_build_deck(
     }
 
     authored: dict[int, dict[str, Any]] = {}
-    if llm_ok:
+    # Analyst mode = slide-by-slide author → validate → data-hunt →
+    # re-author → render → inspect → repair, then move to next slide.
+    # Default ON; opt out by setting PPTX_AGENT_PARALLEL=1 in .env if the
+    # user needs the older fast-but-shallow path.
+    import os as _os
+    analyst_mode = (_os.environ.get("PPTX_AGENT_PARALLEL", "").strip() != "1")
+    if llm_ok and analyst_mode:
+        yield make_event(
+            "log", phase=PHASE_CONTENT,
+            text="Analyst mode: writing slides one at a time with per-slide validate + repair.",
+        )
+        events_iter = iter_analyst_authoring_events(outline, research, deck_meta, llm, settings)
+        for evt in events_iter:
+            etype = evt.get("type")
+            if etype in {"slide_authored", "slide_failed"}:
+                slide = evt.get("slide")
+                if slide:
+                    authored[int(slide["number"])] = slide
+                    yield make_event(
+                        "slide_detail", phase=PHASE_CONTENT,
+                        number=int(slide["number"]), slide=slide,
+                    )
+                    if etype == "slide_failed":
+                        yield make_event(
+                            "log", phase=PHASE_CONTENT,
+                            text=f"Slide {slide['number']} fell back to scaffold: {str(evt.get('error'))[:200]}",
+                        )
+            elif etype in {
+                "analyst_slide_start", "analyst_check", "analyst_repaired",
+                "analyst_data_hunt", "analyst_data_added", "analyst_reauthored",
+                "analyst_reauthor_failed", "analyst_repair_failed",
+                "analyst_slide_done", "analyst_author_failed", "targeted_query",
+            }:
+                # Pass analyst progress events to the UI verbatim.
+                yield evt
+    elif llm_ok:
         max_workers = max(1, min(6, int(getattr(settings, "max_search_queries", 6) or 6)))
         for evt in iter_authoring_events(outline, research, deck_meta, llm, max_workers=max_workers):
             etype = evt.get("type")
@@ -373,12 +420,15 @@ def iter_build_deck(
     }
 
     # ---- Self-repair loop (render → inspect → repair → repeat) ----
-    if llm_ok and slides:
-        from .agent_loop import run_loop, quality_score
-        from .deck_audit import audit_deck as _audit
-        from .visual_inspect import inspect_slide_html as _inspect
-        from .html_renderer import render_single_slide_html as _render
+    # Skip the deck-wide loop when analyst mode already ran a per-slide
+    # repair pass — running it again wastes LLM calls. Still produce a
+    # final quality snapshot so the artifact ships either way.
+    from .agent_loop import run_loop, quality_score
+    from .deck_audit import audit_deck as _audit
+    from .visual_inspect import inspect_slide_html as _inspect
+    from .html_renderer import render_single_slide_html as _render
 
+    if llm_ok and slides and not analyst_mode:
         pending_events: list[dict[str, Any]] = []
 
         def _on_loop_event(evt: dict[str, Any]) -> None:
@@ -403,7 +453,8 @@ def iter_build_deck(
                 k: v for k, v in evt.items() if k not in {"type", "slide"}
             })
 
-        # Final quality snapshot (lower = better; 0 = clean).
+    # Always emit a final quality snapshot for the artifact.
+    if slides:
         final_audit = _audit(deck)
         final_visual: dict[int, list[dict[str, Any]]] = {}
         for sl in deck.get("slides") or []:
