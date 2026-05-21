@@ -430,10 +430,120 @@ main {{ width: min(1180px, calc(100% - 32px)); margin: 28px auto; }}
 .data-table tr:last-child td {{ border-bottom: none; }}
 .data-table tr:hover td {{ background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }}
 .block-table-empty {{ padding: 14px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; font-size: 12px; }}
+
+/* ============================================================
+ * Per-layout slide chrome — vary the shell so slides don't all
+ * read like the same template. Layout-specific blocks (chart,
+ * table, diagram, etc.) get prominence positioning per role.
+ * ============================================================ */
+
+/* COVER: hero-centered. Bigger heading, no top-rail accent bar,
+ * subtitle smaller and lower. */
+.slide-cover {{ justify-content: center; padding: 64px 48px; }}
+.slide-cover::before {{ display: none; }}
+.slide-cover .slide-body {{ gap: 16px; }}
+.slide-cover .block-eyebrow .eyebrow {{ font-size: 14px; letter-spacing: .12em; }}
+.slide-cover .block-heading h2 {{ font-size: 54px; max-width: 22ch; }}
+.slide-cover .block-subheading .subtitle {{ font-size: 22px; max-width: 60ch; }}
+.slide-cover .block-metric_row {{ margin-top: 12px; }}
+
+/* MARKET / METRICS / TRACTION / RESULTS: data-first.
+ * Two-column body — hero_stat on left, chart on right when both present. */
+.slide-market .slide-body,
+.slide-metrics .slide-body,
+.slide-traction .slide-body,
+.slide-results .slide-body {{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 20px;
+  align-items: start;
+}}
+.slide-market .block-eyebrow,
+.slide-market .block-heading,
+.slide-market .block-subheading,
+.slide-metrics .block-eyebrow,
+.slide-metrics .block-heading,
+.slide-metrics .block-subheading,
+.slide-traction .block-eyebrow,
+.slide-traction .block-heading,
+.slide-traction .block-subheading,
+.slide-results .block-eyebrow,
+.slide-results .block-heading,
+.slide-results .block-subheading {{
+  grid-column: 1 / -1;
+}}
+.slide-market .block-chart,
+.slide-metrics .block-chart,
+.slide-traction .block-chart,
+.slide-results .block-chart {{
+  grid-column: 2 / 3;
+  grid-row: span 2;
+}}
+.slide-market .block-hero_stat,
+.slide-metrics .block-hero_stat,
+.slide-traction .block-hero_stat,
+.slide-results .block-hero_stat {{ grid-column: 1 / 2; }}
+
+/* COMPARISON / COMPETITION / SEGMENTS: table dominant. */
+.slide-comparison .block-table,
+.slide-competition .block-table,
+.slide-segments .block-table {{ margin-top: 4px; }}
+.slide-comparison .block-paragraph p,
+.slide-competition .block-paragraph p {{ font-size: 13px; }}
+
+/* SOLUTION / ARCHITECTURE / ROADMAP: diagram center stage. */
+.slide-solution .slide-body,
+.slide-architecture .slide-body,
+.slide-roadmap .slide-body {{ gap: 18px; }}
+.slide-solution .block-diagram,
+.slide-architecture .block-diagram,
+.slide-roadmap .block-diagram {{ padding: 12px 0; }}
+.slide-solution .flow,
+.slide-architecture .flow,
+.slide-roadmap .flow {{ justify-content: space-between; width: 100%; }}
+.slide-solution .flow b,
+.slide-architecture .flow b,
+.slide-roadmap .flow b {{ flex: 1; text-align: center; font-size: 14px; }}
+
+/* PROBLEM / RISKS: warning palette emphasis. */
+.slide-problem .callout,
+.slide-risks .callout {{ font-size: 16px; padding: 18px 20px; }}
+.slide-problem .block-heading h2,
+.slide-risks .block-heading h2 {{ color: var(--warn, var(--accent)); }}
+
+/* CLOSING / ASK: centered call-to-action. */
+.slide-closing {{ text-align: center; align-items: center; }}
+.slide-closing .slide-body {{ align-items: center; }}
+.slide-closing .block-quote blockquote {{ font-size: 24px; line-height: 1.3; max-width: 36ch; }}
+.slide-closing .block-bullets ul {{ display: flex; flex-direction: column; gap: 8px; align-items: center; }}
+.slide-ask .block-metric_row .metric-row {{ grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }}
+
+/* TEAM: image left, bullets right. */
+.slide-team .slide-body {{
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 1.6fr);
+  gap: 22px;
+  align-items: start;
+}}
+.slide-team .block-eyebrow,
+.slide-team .block-heading,
+.slide-team .block-subheading {{ grid-column: 1 / -1; }}
+.slide-team .block-image {{ grid-column: 1 / 2; grid-row: span 2; }}
+.slide-team .block-bullets {{ grid-column: 2 / 3; }}
+
 @media (max-width: 760px) {{
   main {{ width: min(100% - 16px, 680px); }}
   .slide {{ aspect-ratio: auto; min-height: 640px; padding: 24px; }}
   .block-heading h2 {{ font-size: 30px; max-width: none; }}
   .chart .bars {{ height: 140px; }}
+  .slide-market .slide-body,
+  .slide-metrics .slide-body,
+  .slide-traction .slide-body,
+  .slide-results .slide-body,
+  .slide-team .slide-body {{ grid-template-columns: 1fr; }}
+  .slide-market .block-chart,
+  .slide-metrics .block-chart,
+  .slide-traction .block-chart,
+  .slide-results .block-chart {{ grid-column: 1; grid-row: auto; }}
 }}
 """
