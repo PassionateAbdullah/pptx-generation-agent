@@ -619,3 +619,57 @@ def _author_or_scaffold(
     except Exception as exc:  # noqa: BLE001
         log.warning("slide %s author failed: %s", entry.get("number"), exc)
         return _scaffold_slide(entry), str(exc)
+
+
+def iter_analyst_authoring_events(
+    outline: dict[str, Any],
+    research: dict[str, Any],
+    deck_meta: dict[str, Any],
+    llm: LLMClient,
+    settings: Any,
+) -> Iterator[dict[str, Any]]:
+    """Sequential analyst pipeline: one slide at a time, with per-slide
+    data hunt + validate + repair before moving to the next slide.
+
+    Drops into the same event protocol the parallel path uses
+    (``slide_authored``/``slide_failed``/``slides_ready``) so the planner
+    only needs to swap the call site.
+    """
+    # Local import: analyst imports back into slide_author for shared
+    # helpers, so resolve it lazily.
+    from .analyst import analyst_pass
+
+    outline_slides = outline.get("slides") or []
+    if not outline_slides:
+        yield {"type": "slides_ready", "slides": []}
+        return
+
+    slides_out: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+
+    def collect(evt: dict[str, Any]) -> None:
+        pending.append(evt)
+
+    for entry in outline_slides:
+        try:
+            slide = analyst_pass(entry, research, deck_meta, llm, settings, on_event=collect)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("analyst_pass crashed on slide %s: %s", entry.get("number"), exc)
+            slide = _scaffold_slide(entry)
+            pending.append({
+                "type": "slide_failed",
+                "number": int(entry.get("number") or 0),
+                "error": str(exc)[:240],
+                "slide": slide,
+            })
+        for evt in pending:
+            yield evt
+        pending.clear()
+        slides_out.append(slide)
+        yield {
+            "type": "slide_authored",
+            "number": int(slide.get("number") or 0),
+            "slide": slide,
+        }
+
+    yield {"type": "slides_ready", "slides": slides_out}
