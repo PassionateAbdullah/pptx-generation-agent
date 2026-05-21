@@ -232,4 +232,77 @@ export type AgentEvent =
   | FileEvent
   | DeckReadyEvent
   | DoneEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | IntentClassifiedEvent
+  | IntentClarifyEvent
+  | RedirectNewEvent
+  | EditStartedEvent
+  | SlideEditedEvent
+  | EditFinishedEvent
+  | EditPersistedEvent
+  | TargetedQueryEvent
+  | SlideHtmlReadyEvent;
+
+export interface IntentClassifiedEvent extends BaseEvent {
+  type: "intent_classified";
+  intent: "new" | "edit" | "clarify";
+  target_slide: number | null;
+  needs_research: boolean;
+  reason: string;
+  clarify_question?: string;
+}
+
+export interface IntentClarifyEvent extends BaseEvent {
+  type: "intent_clarify";
+  question: string;
+  slides: Array<{ number: number; title: string }>;
+}
+
+export interface RedirectNewEvent extends BaseEvent {
+  type: "redirect_new";
+  message: string;
+  reason: string;
+}
+
+export interface EditStartedEvent extends BaseEvent {
+  type: "edit_started";
+  slide_number: number;
+  instruction: string;
+}
+
+export interface SlideEditedEvent extends BaseEvent {
+  type: "slide_edited";
+  number: number;
+  slide: SlideData;
+  instruction: string;
+}
+
+export interface EditFinishedEvent extends BaseEvent {
+  type: "edit_finished";
+  slide_number: number;
+  ok: boolean;
+  block_count?: number;
+}
+
+export interface EditPersistedEvent extends BaseEvent {
+  type: "edit_persisted";
+  slide_number: number;
+  slide_url: string;
+  html_url: string;
+  download_url: string;
+}
+
+export interface TargetedQueryEvent extends BaseEvent {
+  type: "targeted_query";
+  slide?: number;
+  query: string;
+  hits: number;
+}
+
+export interface SlideHtmlReadyEvent extends BaseEvent {
+  type: "slide_html_ready";
+  phase: PhaseId;
+  number: number;
+  url: string;
+  first: boolean;
+}
