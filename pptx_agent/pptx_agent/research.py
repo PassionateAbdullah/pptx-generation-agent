@@ -78,6 +78,10 @@ class Researcher:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._last_search_meta: dict[str, Any] = {}
+        # Populated by _fetch_source_excerpt when a fetch fails; the
+        # enrichment pass surfaces these to the event stream so the UI can
+        # show *why* a source has no excerpt.
+        self._last_fetch_errors: dict[str, str] = {}
 
     def run(self, prompt: str, topic: str) -> dict[str, Any]:
         result: dict[str, Any] | None = None
@@ -180,6 +184,16 @@ class Researcher:
             deduped = self._fallback_sources(topic)
         elif self.settings.search_depth == "deep":
             enriched_count = self._enrich_sources(deduped)
+            # Drain any per-URL fetch errors that built up during enrichment
+            # so the UI can show which sources came back with only snippets.
+            for failed_url, reason in self._last_fetch_errors.items():
+                yield make_event(
+                    "source_fetch_error",
+                    phase=PHASE_RESEARCH,
+                    url=failed_url,
+                    reason=reason,
+                )
+            self._last_fetch_errors.clear()
             if enriched_count:
                 yield make_event(
                     "log",
@@ -577,46 +591,24 @@ class Researcher:
         return enriched
 
     def _fetch_source_excerpt(self, url: str) -> str:
+        """Fetch full readable body from a source URL.
+
+        Delegates to ``pptx_agent.fetch.fetch_url_body`` which mirrors the
+        ``fetch_url`` API the developer proposed (realistic UA, redirects,
+        content-type gate, structured error strings). Empty return means
+        the fetch failed — caller logs ``fetch_error`` attribute for
+        visibility.
+        """
+        from .fetch import fetch_url_body  # local import to keep cold-start light
         if not url.startswith(("http://", "https://")):
             return ""
-        lower_url = url.lower().split("?", 1)[0]
-        if lower_url.endswith((".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx", ".zip")):
+        body, err = fetch_url_body(url, max_chars=self.settings.max_source_chars)
+        if err:
+            log.warning("source fetch failed %s: %s", url, err)
+            # Stash the error string so _enrich_sources can surface it as an event.
+            self._last_fetch_errors[url] = err
             return ""
-        # Use a realistic User-Agent — many sites 403 anything that looks
-        # like a bot. Without this the enrichment pass drops most sources,
-        # which starves downstream slide authoring of source body text.
-        request = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
-                "Accept-Language": "en-US,en;q=0.9",
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-                ),
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                content_type = response.headers.get("Content-Type", "")
-                if "text/html" not in content_type and "text/plain" not in content_type:
-                    log.info("excerpt skipped (mime=%s): %s", content_type, url)
-                    return ""
-                charset = response.headers.get_content_charset() or "utf-8"
-                raw = response.read(self.settings.max_source_chars * 8)
-        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
-            log.warning("excerpt fetch failed %s: %s", url, exc)
-            return ""
-        except Exception as exc:  # noqa: BLE001
-            log.warning("excerpt fetch unexpected error %s: %s", url, exc)
-            return ""
-
-        text = raw.decode(charset, errors="replace")
-        if "text/html" in content_type:
-            parser = _HTMLTextExtractor()
-            parser.feed(text)
-            text = parser.text()
-        return self._clean_text(text)[: self.settings.max_source_chars].strip()
+        return body.strip()
 
     def _first_sentence(self, text: str) -> str:
         cleaned = self._clean_text(text)
