@@ -571,6 +571,66 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(deck_pitch["family"], "pitch_deck")
         self.assertEqual(deck_brief["family"], "research_briefing")
 
+    def test_dynamic_outline_does_not_turn_local_fallback_sources_into_slide_copy(self):
+        from pptx_agent.dynamic_outline import build_outline
+        research = {
+            "sources": [
+                {
+                    "source_id": "S1",
+                    "title": "Topic research plan",
+                    "url": "local://research-plan",
+                    "snippet": "A useful deck should explain the current landscape, main stakeholder problems, market or policy context.",
+                    "excerpt": "",
+                },
+                {
+                    "source_id": "S2",
+                    "title": "Topic evidence checklist",
+                    "url": "local://evidence-checklist",
+                    "snippet": "The strongest slides use current statistics and concrete examples instead of generic claims.",
+                    "excerpt": "",
+                },
+            ],
+            "insights": [],
+        }
+        deck = build_outline(
+            "Create a 10-slide presentation on pharmaceutical exports in Bangladesh",
+            "pharmaceutical exports in Bangladesh",
+            10,
+            research,
+        )
+        blob = " ".join(
+            [slide.get("subtitle", "") for slide in deck["slides"]]
+            + [bullet for slide in deck["slides"] for bullet in slide.get("bullets", [])]
+        ).lower()
+        self.assertNotIn("research plan", blob)
+        self.assertNotIn("evidence checklist", blob)
+        self.assertNotIn("pitch narrative", blob)
+
+    def test_dynamic_outline_emits_slide_plan_metadata(self):
+        from pptx_agent.dynamic_outline import build_outline
+        research = {
+            "sources": [{
+                "source_id": "S1",
+                "title": "Bangladesh pharma export",
+                "url": "https://example.com/pharma",
+                "excerpt": "Pharmaceutical exports from Bangladesh reached $188 million. Growth accelerated across regulated markets.",
+                "snippet": "Regulated markets drove export growth.",
+            }],
+            "insights": [],
+        }
+        deck = build_outline(
+            "Create a market analysis on pharmaceutical exports in Bangladesh",
+            "pharmaceutical exports in Bangladesh",
+            8,
+            research,
+        )
+        market_slide = next((s for s in deck["slides"] if s.get("layout") in {"market", "metrics"}), deck["slides"][1])
+        self.assertIn("focus_keywords", market_slide)
+        self.assertIsInstance(market_slide["focus_keywords"], list)
+        self.assertIn("assigned_source_ids", market_slide)
+        self.assertIsInstance(market_slide["assigned_source_ids"], list)
+        self.assertIn("needs_chart", market_slide)
+
     def test_slide_md_emitter_matches_manus_format(self):
         from pptx_agent.slide_md import emit_slide_md
         deck = {
@@ -629,6 +689,22 @@ class PipelineTest(unittest.TestCase):
             md = (job_dir / "slide.md").read_text(encoding="utf-8")
             self.assertIn("##", md)
             self.assertIn("slide_md", artifacts)
+
+    def test_pipeline_writes_slide_plan_artifact(self):
+        from pptx_agent.pipeline import write_deck_artifacts
+        from pptx_agent.planner import build_deck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = self.settings(root)
+            research = Researcher(settings).run("Pitch on solar power in Africa", "solar power in Africa")
+            deck, _ = build_deck("Pitch on solar power in Africa", 8, research, settings)
+            job_dir = root / "job-plan"
+            artifacts = write_deck_artifacts(deck, job_dir, research)
+            self.assertTrue((job_dir / "slide_plan.md").exists())
+            slide_plan = (job_dir / "slide_plan.md").read_text(encoding="utf-8")
+            self.assertIn("Slide Plan", slide_plan)
+            self.assertIn("Actual blocks", slide_plan)
+            self.assertIn("slide_plan", artifacts)
 
     def test_pipeline_writes_layout_audit_artifacts(self):
         from pptx_agent.pipeline import write_deck_artifacts
@@ -1205,11 +1281,12 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("/static/html-ppt/animations/animations.css", html)
 
     def test_theme_bridge_aliases_legacy_names_to_html_ppt_files(self):
-        from pptx_agent.themes import html_ppt_theme_filename
+        from pptx_agent.themes import get_theme, html_ppt_theme_filename
         self.assertEqual(html_ppt_theme_filename("betopia"), "soft-pastel.css")
         self.assertEqual(html_ppt_theme_filename("midnight"), "dracula.css")
         self.assertEqual(html_ppt_theme_filename("slate"), "corporate-clean.css")
         self.assertEqual(html_ppt_theme_filename("tokyo-night"), "tokyo-night.css")
+        self.assertEqual(get_theme("tokyo-night").name, "tokyo-night")
         # Unknown name falls back to default's alias.
         out = html_ppt_theme_filename("does-not-exist")
         self.assertTrue(out.endswith(".css"))
