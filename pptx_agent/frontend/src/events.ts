@@ -130,6 +130,14 @@ export interface SlideOutlineEvent extends BaseEvent {
   subtitle: string;
   eyebrow: string;
   layout: string;
+  role?: string;
+  focus_keywords?: string[];
+  assigned_source_ids?: string[];
+  needs_chart?: boolean;
+  needs_table?: boolean;
+  needs_diagram?: boolean;
+  needs_hero_stat?: boolean;
+  animation?: string;
 }
 
 export type BlockType =
