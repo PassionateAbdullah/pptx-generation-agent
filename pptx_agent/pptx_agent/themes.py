@@ -255,6 +255,57 @@ _LEGACY_ALIAS: dict[str, str] = {
     "pitch": "pitch-deck-vc",
 }
 
+_FAMILY_THEME_CHOICES: dict[str, tuple[str, ...]] = {
+    "pitch_deck": ("pitch", "midnight", "betopia"),
+    "research_briefing": ("slate", "mono", "sand"),
+    "market_analysis": ("slate", "midnight", "mono"),
+    "case_study": ("sand", "betopia", "slate"),
+    "product_overview": ("midnight", "betopia", "slate"),
+    "report": ("slate", "betopia", "sand"),
+}
+
+
+def _stable_bucket(text: str, modulo: int) -> int:
+    if modulo <= 0:
+        return 0
+    total = 0
+    for index, char in enumerate(text or "", start=1):
+        total += index * ord(char)
+    return total % modulo
+
+
+def resolve_theme_name(name: str | None) -> str:
+    """Return a valid legacy or html-ppt theme name."""
+    if not name:
+        return DEFAULT_THEME
+    candidate = str(name).strip()
+    if candidate in THEMES or candidate in HTML_PPT_THEMES:
+        return candidate
+    if candidate in _LEGACY_ALIAS:
+        return candidate
+    return DEFAULT_THEME
+
+
+def choose_theme_name(
+    prompt: str,
+    topic: str,
+    family: str,
+    requested: str | None = None,
+) -> str:
+    """Pick a deterministic theme for the deck.
+
+    User-selected themes win. Otherwise, vary the deck's palette by family
+    and prompt/topic so repeated offline runs do not collapse into the same
+    visual treatment.
+    """
+    resolved = resolve_theme_name(requested)
+    if requested and resolved != DEFAULT_THEME:
+        return resolved
+
+    choices = _FAMILY_THEME_CHOICES.get(str(family or "").strip(), _FAMILY_THEME_CHOICES["report"])
+    idx = _stable_bucket(f"{topic}|{prompt}", len(choices))
+    return choices[idx]
+
 
 def html_ppt_theme_filename(name: str | None) -> str:
     """Resolve a theme name (legacy or html-ppt) to its CSS filename.
@@ -278,6 +329,10 @@ def html_ppt_theme_filename(name: str | None) -> str:
 def get_theme(name: str | None) -> Theme:
     if name and name in THEMES:
         return THEMES[name]
+    if name and name in HTML_PPT_THEMES:
+        label, mode = HTML_PPT_THEMES[name]
+        base = THEMES["midnight" if mode == "dark" else "slate"]
+        return Theme(name=name, label=label, mode=mode, tokens=dict(base.tokens))
     return THEMES[DEFAULT_THEME]
 
 
