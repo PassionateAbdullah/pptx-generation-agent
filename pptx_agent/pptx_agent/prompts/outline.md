@@ -63,17 +63,6 @@ The downstream slide author respects per-layout block budgets, but the outline m
 - For data-heavy slides, alternate which visual block you flag: one slide `needs_chart=true`, the next `needs_hero_stat=true`, the next `needs_table=true`. The deck should not look like the same chart 5 times.
 - Each role appears at most twice in the deck. If you need a third coverage of the same theme, pick a different layout (e.g. swap second `solution` slide for a `comparison`).
 
-# Theme catalog (pick one for `family` defaults)
+# Theme handling
 
-Available themes (filename-keyed): `minimal-white`, `editorial-serif`, `soft-pastel`, `sharp-mono`, `arctic-cool`, `sunset-warm`, `catppuccin-latte`, `catppuccin-mocha`, `dracula`, `tokyo-night`, `nord`, `solarized-light`, `gruvbox-dark`, `rose-pine`, `neo-brutalism`, `glassmorphism`, `bauhaus`, `swiss-grid`, `terminal-green`, `xiaohongshu-white`, `rainbow-gradient`, `aurora`, `blueprint`, `memphis-pop`, `cyberpunk-neon`, `y2k-chrome`, `retro-tv`, `japanese-minimal`, `vaporwave`, `midcentury`, `corporate-clean`, `academic-paper`, `news-broadcast`, `pitch-deck-vc`, `magazine-bold`, `engineering-whiteprint`.
-
-Suggested defaults by family (use these unless the prompt names a different aesthetic):
-
-- `pitch_deck` → `pitch-deck-vc` or `corporate-clean`
-- `research_briefing` → `academic-paper` or `editorial-serif`
-- `market_analysis` → `swiss-grid` or `blueprint`
-- `case_study` → `magazine-bold` or `soft-pastel`
-- `product_overview` → `glassmorphism` or `xiaohongshu-white`
-- `tech_sharing` → `tokyo-night` or `terminal-green`
-
-The chosen theme is rendered by html-ppt's vendored CSS; the user can cycle themes at view time with the `T` key.
+Theme choice is handled downstream by the renderer. Do not hardcode a visual aesthetic here. Focus on the deck's story shape, slide roles, and evidence plan.
