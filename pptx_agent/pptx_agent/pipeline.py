@@ -15,6 +15,7 @@ from .planner import (
     extract_topic,
     iter_build_deck,
     slide_content_markdown,
+    slide_plan_markdown,
 )
 from .research import Researcher
 from .slide_md import emit_slide_md
@@ -40,6 +41,7 @@ def write_deck_artifacts(
     research = research if research is not None else deck.get("research") or {}
     structure = deck_structure_text(deck)
     markdown = slide_content_markdown(deck)
+    slide_plan = slide_plan_markdown(deck)
     # Run deck_audit BEFORE render so the HTML can embed the audit panel.
     audit = audit_deck(deck)
     html = render_full_html(deck, audit=audit)
@@ -53,6 +55,7 @@ def write_deck_artifacts(
     write_json(job_dir / "deck.json", deck)
     (job_dir / "pitch_deck_structure.txt").write_text(structure, encoding="utf-8")
     (job_dir / "slide_content.md").write_text(markdown, encoding="utf-8")
+    (job_dir / "slide_plan.md").write_text(slide_plan, encoding="utf-8")
     (job_dir / "slides.html").write_text(html, encoding="utf-8")
     (job_dir / "sources.md").write_text(sources_md, encoding="utf-8")
     (job_dir / "slide.md").write_text(slide_md, encoding="utf-8")
@@ -78,6 +81,7 @@ def write_deck_artifacts(
     return {
         "structure": structure,
         "slide_content": markdown,
+        "slide_plan": slide_plan,
         "preview_html": preview_fragment,
         "html": html,
         "sources_md": sources_md,
@@ -186,6 +190,7 @@ def iter_pipeline(
 
     yield make_event("file", phase=PHASE_RENDER, path="pitch_deck_structure.txt", content=structure)
     yield make_event("file", phase=PHASE_RENDER, path="slide_content.md", content=markdown)
+    yield make_event("file", phase=PHASE_RENDER, path="slide_plan.md", content=artifacts["slide_plan"])
     yield make_event(
         "file",
         phase=PHASE_RENDER,
