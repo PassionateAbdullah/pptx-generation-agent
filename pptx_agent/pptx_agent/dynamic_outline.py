@@ -53,6 +53,10 @@ from .topic_families import (
 
 
 _TITLE_FROM_CLAIM_KIND_PRIORITY = ("head_to_head", "percent", "currency", "time", "number", "entity")
+_TOPIC_STOPWORDS = {
+    "a", "an", "and", "are", "for", "from", "in", "into", "of", "on", "our",
+    "recent", "the", "their", "this", "that", "to", "with", "years",
+}
 
 
 def _hero_stat_block(slide_number: int, metric: dict[str, str], source_id: str = "") -> dict[str, Any]:
@@ -92,6 +96,11 @@ def _is_hero_worthy(metric: dict[str, str]) -> bool:
 # returns nothing for a role's theme — keeps the slide from shipping blank.
 # Format strings have ``{topic}``/``{primary}`` placeholders.
 _ROLE_FALLBACK_BULLETS: dict[str, list[str]] = {
+    "context": [
+        "{primary} sits in a broader system that shapes demand, delivery, and buyer behavior.",
+        "Recent shifts around {topic} matter because they change who pays, who adopts, and who benefits.",
+        "The right reading starts with structure before moving to the opportunity layer.",
+    ],
     "competition": [
         "{primary} compares favorably against incumbents on speed, cost, and integration.",
         "Switching cost stays low because data and workflows remain owned by the customer.",
@@ -106,6 +115,11 @@ _ROLE_FALLBACK_BULLETS: dict[str, list[str]] = {
         "Tiered subscription: starter, team, and enterprise pricing for {primary}.",
         "Usage-based add-ons for high-volume workloads.",
         "Professional services accelerate onboarding without becoming the revenue engine.",
+    ],
+    "sizing": [
+        "The addressable pool for {primary} should be split by buyer type, use case, and geography.",
+        "Spend concentration matters more than top-line sector size when prioritizing the first wedge.",
+        "The best early segment combines visible demand, budget, and low deployment friction.",
     ],
     "model": [
         "Tiered subscription priced per seat or per workflow on {primary}.",
@@ -122,6 +136,11 @@ _ROLE_FALLBACK_BULLETS: dict[str, list[str]] = {
         "Advisors include practitioners from buyer-side institutions.",
         "Distributed hiring strategy targets specialists in target segments.",
     ],
+    "players": [
+        "The leading players span incumbents, specialists, and fast-moving challengers around {primary}.",
+        "Positioning depends on who owns distribution, trust, and workflow depth in the category.",
+        "Partnerships may matter as much as direct competition in how the space consolidates.",
+    ],
     "stakeholders": [
         "Primary buyer, operational owner, and end users are mapped for {primary}.",
         "Regulators and standards bodies shape adoption timelines.",
@@ -136,6 +155,11 @@ _ROLE_FALLBACK_BULLETS: dict[str, list[str]] = {
         "{primary} reduced cycle time and unit cost in pilot deployments.",
         "Quality scores beat baseline benchmarks on representative workloads.",
         "Customers expanded usage within 90 days of go-live.",
+    ],
+    "segments": [
+        "Segments around {primary} differ on willingness to pay, regulatory friction, and urgency.",
+        "The first segment should be the one where pain, budget, and deployment fit overlap.",
+        "Expansion logic should move from the best-fit segment into adjacent categories, not everywhere at once.",
     ],
     "closing": [
         "{primary}: research-backed, focused, and execution-ready.",
@@ -166,6 +190,11 @@ _ROLE_FALLBACK_BULLETS: dict[str, list[str]] = {
         "Operational integration matters more than model selection.",
         "Customer success motion is the moat compounder.",
     ],
+    "outlook": [
+        "The next horizon for {primary} depends on whether current growth drivers remain intact.",
+        "Scenario planning should separate near-term execution from longer-term structural change.",
+        "The strongest outlook pairs measurable milestones with clear trigger points for expansion.",
+    ],
 }
 
 
@@ -176,6 +205,134 @@ def _fallback_bullets_for_role(role: SlideRole, topic: str, primary: str, count:
         filled = line.format(topic=topic, primary=primary or topic)
         out.append(filled)
     return out
+
+
+_ROLE_FALLBACK_SUBTITLES: dict[str, str] = {
+    "cover": "{topic} through the angles that matter for this deck.",
+    "agenda": "The story moves from context to evidence to the next decision.",
+    "problem": "{topic} still faces concrete gaps that create urgency for change.",
+    "challenge": "{topic} still faces concrete gaps that create urgency for change.",
+    "solution": "{topic} needs a credible response path, not a generic overview.",
+    "approach": "{topic} needs a credible response path, not a generic overview.",
+    "product": "{topic} needs a credible response path, not a generic overview.",
+    "technology": "The system design matters because delivery depends on operational fit.",
+    "architecture": "The system design matters because delivery depends on operational fit.",
+    "market": "The numeric story should show where demand, spend, or growth is concentrated.",
+    "sizing": "The numeric story should show where demand, spend, or growth is concentrated.",
+    "growth": "The numeric story should show where demand, spend, or growth is concentrated.",
+    "findings": "The strongest takeaways should surface as evidence, not generic summary.",
+    "evidence": "The strongest takeaways should surface as evidence, not generic summary.",
+    "competition": "The deck should make tradeoffs and positioning obvious at a glance.",
+    "comparison": "The deck should make tradeoffs and positioning obvious at a glance.",
+    "segments": "Different segments behave differently; they should not be collapsed together.",
+    "risks": "Constraints and downside scenarios need to be explicit before committing resources.",
+    "business_model": "Revenue mechanics and delivery economics need to stay grounded and concrete.",
+    "model": "Revenue mechanics and delivery economics need to stay grounded and concrete.",
+    "traction": "Execution proof matters more than broad claims once the story advances.",
+    "results": "Execution proof matters more than broad claims once the story advances.",
+    "adoption": "Execution proof matters more than broad claims once the story advances.",
+    "team": "Capability, credibility, and execution ownership should be visible here.",
+    "stakeholders": "Capability, credibility, and execution ownership should be visible here.",
+    "players": "Capability, credibility, and execution ownership should be visible here.",
+    "customer": "Capability, credibility, and execution ownership should be visible here.",
+    "roadmap": "The next moves should show sequencing, not just ambition.",
+    "outlook": "The next moves should show sequencing, not just ambition.",
+    "ask": "Close with a specific decision, ask, or recommendation.",
+    "recommendations": "Close with a specific decision, ask, or recommendation.",
+    "get_started": "Close with a specific decision, ask, or recommendation.",
+    "next": "Close with a specific decision, ask, or recommendation.",
+    "closing": "End on the clearest next move for this topic.",
+    "drivers": "The forces shaping momentum should be separated from the outcome itself.",
+    "opportunity": "The opportunity should be framed as a concrete wedge, not a broad sector claim.",
+    "lessons": "The learning should translate into action, not stay abstract.",
+}
+
+
+def _external_sources(research: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = []
+    for source in (research.get("sources") or []):
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "")
+        if url.startswith("local://"):
+            continue
+        sources.append(source)
+    return sources
+
+
+def _topic_keywords(topic: str, max_n: int = 3) -> list[str]:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9-]+", topic.lower())
+    out: list[str] = []
+    for token in tokens:
+        if token in _TOPIC_STOPWORDS or len(token) < 3:
+            continue
+        if token not in out:
+            out.append(token)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def _focus_keywords_for_role(role: SlideRole, topic: str, primary: str) -> list[str]:
+    out: list[str] = []
+    for token in [*role.theme_keywords, primary.lower(), *_topic_keywords(topic)]:
+        token = str(token).strip().lower()
+        if not token or token in _TOPIC_STOPWORDS or token in out:
+            continue
+        out.append(token)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _assigned_source_ids(role: SlideRole, research: dict[str, Any], citations: list[str]) -> list[str]:
+    if citations:
+        return citations[:3]
+    candidates = []
+    theme_terms = set(role.theme_keywords or [])
+    if not theme_terms:
+        return []
+    for source in _external_sources(research):
+        sid = str(source.get("source_id") or "").strip()
+        if not sid:
+            continue
+        blob = " ".join(
+            str(source.get(key) or "") for key in ("title", "snippet", "excerpt")
+        ).lower()
+        score = sum(1 for term in theme_terms if term and term in blob)
+        if score <= 0 and role.required:
+            continue
+        candidates.append((score, sid))
+    candidates.sort(key=lambda row: (-row[0], row[1]))
+    return [sid for _, sid in candidates[:3]]
+
+
+def _visual_flags(role: SlideRole, metrics: list[dict[str, str]]) -> dict[str, bool]:
+    data_role = role.role in {"market", "sizing", "growth", "evidence", "findings", "traction", "results", "adoption"}
+    needs_hero = bool(metrics and _is_hero_worthy(metrics[0]) and data_role)
+    needs_chart = bool(role.prefer_chart and (metrics or data_role))
+    needs_table = role.role in {"competition", "comparison", "segments", "risks"}
+    needs_diagram = role.role in {"solution", "approach", "product", "technology", "architecture", "roadmap", "outlook", "drivers", "opportunity", "lessons"}
+    return {
+        "needs_chart": needs_chart,
+        "needs_table": needs_table,
+        "needs_diagram": needs_diagram,
+        "needs_hero_stat": needs_hero,
+    }
+
+
+def _default_animation(role: SlideRole) -> str:
+    if role.role in {"market", "sizing", "growth", "evidence", "findings", "traction", "results"}:
+        return "fade-up"
+    if role.role in {"competition", "comparison", "segments", "risks"}:
+        return "slide-in-right"
+    if role.role in {"solution", "approach", "product", "technology", "architecture", "roadmap", "outlook"}:
+        return "slide-in-left"
+    if role.role in {"team", "stakeholders", "players", "customer"}:
+        return "reveal"
+    if role.role in {"ask", "recommendations", "get_started", "next", "closing"}:
+        return "fade-in"
+    return ""
 
 
 def _title_from_claim(claim: Claim, role: SlideRole, topic: str, prompt: str) -> str:
@@ -201,7 +358,7 @@ def _title_from_claim(claim: Claim, role: SlideRole, topic: str, prompt: str) ->
     return text
 
 
-def _build_subtitle(claims: list[Claim], topic: str, fallback: str) -> str:
+def _build_subtitle(claims: list[Claim], role: SlideRole, topic: str, fallback: str) -> str:
     """Pick the highest-scoring concrete claim as the slide lede."""
     for c in claims:
         candidate = assertive(c.text)
@@ -209,7 +366,10 @@ def _build_subtitle(claims: list[Claim], topic: str, fallback: str) -> str:
             continue
         if 24 <= len(candidate) <= 180:
             return candidate
-    return assertive(fallback) or f"What we know about {topic}."
+    subtitle = fallback or _ROLE_FALLBACK_SUBTITLES.get(role.role, "")
+    if subtitle:
+        return assertive(subtitle.format(topic=topic))
+    return f"{role.eyebrow or role.role.replace('_', ' ').title()} for {topic}."
 
 
 def _claims_to_bullets(claims: list[Claim], min_n: int, max_n: int, fallbacks: list[str]) -> list[str]:
@@ -399,7 +559,13 @@ def _blocks_for_role(
             blocks.append(_bullets_block(number, len(blocks) + 1, bullets[1:]))
     elif role.role == "closing":
         blocks.append(_quote(number, len(blocks) + 1, subtitle or title, attribution=""))
-    elif role.role in {"drivers", "opportunity", "lessons"}:
+    elif role.role == "drivers":
+        blocks.append(_diagram(number, len(blocks) + 1, "flow", bullets[:4] or ["Policy", "Demand", "Supply", "Execution"]))
+        if bullets:
+            blocks.append(_callout(number, len(blocks) + 1, bullets[0], tone="info"))
+            if len(bullets) > 1:
+                blocks.append(_bullets_block(number, len(blocks) + 1, bullets[1:]))
+    elif role.role in {"opportunity", "lessons"}:
         if bullets:
             tone = "success" if role.role == "opportunity" else "accent"
             blocks.append({
@@ -457,7 +623,8 @@ def build_outline(
     pk = primary_keyword(topic, prompt)
     topic_label = _topic_from_prompt(prompt, topic)
 
-    claims = mine_claims(research)
+    research_external = {**research, "sources": _external_sources(research)}
+    claims = mine_claims(research_external)
 
     # Walk checklist, build slides until we hit slide_count.
     slides: list[dict[str, Any]] = []
@@ -490,7 +657,7 @@ def build_outline(
             title = fill_title_template(role.title_template, topic_label, prompt)
         else:
             title = _title_from_claim(themed[0], role, topic_label, prompt)
-        subtitle = _build_subtitle(themed, topic_label, fallback="")
+        subtitle = _build_subtitle(themed, role, topic_label, fallback="")
         if role.role == "cover":
             subtitle = subtitle or _deck_subtitle(topic_label, family)
         fallbacks = _fallback_bullets_for_role(role, topic_label, pk, count=role.max_claims)
@@ -504,10 +671,13 @@ def build_outline(
         citations = sorted({c.source_id for c in themed if c.source_id})
         if role.role == "cover":
             citations = []
+        plan_flags = _visual_flags(role, metrics)
+        assigned_ids = _assigned_source_ids(role, research_external, citations)
 
         slide_dict: dict[str, Any] = {
             "number": number,
             "id": f"slide-{number}",
+            "role": role.role,
             "layout": role.layout,
             "eyebrow": role.eyebrow or role.role.replace("_", " ").title(),
             "title": title,
@@ -517,6 +687,10 @@ def build_outline(
             "speaker_notes": "",
             "citations": citations,
             "accent_variant": (number - 1) % 4,
+            "focus_keywords": _focus_keywords_for_role(role, topic_label, pk),
+            "assigned_source_ids": assigned_ids,
+            "animation": _default_animation(role),
+            **plan_flags,
         }
         slide_dict["blocks"] = _blocks_for_role(
             role,
@@ -525,7 +699,7 @@ def build_outline(
             subtitle=subtitle,
             bullets=bullets,
             metrics=metrics,
-            research=research,
+            research=research_external,
             citations=citations,
         )
         slides.append(slide_dict)
@@ -598,6 +772,7 @@ def build_outline(
         slides.append({
             "number": number,
             "id": f"slide-{number}",
+            "role": "closing",
             "layout": "closing",
             "eyebrow": "Appendix",
             "title": title,
@@ -606,6 +781,17 @@ def build_outline(
             "metrics": [],
             "speaker_notes": "",
             "citations": sorted({c.source_id for c in leftover if c.source_id}),
+            "focus_keywords": _focus_keywords_for_role(
+                SlideRole(role="closing", layout="closing", title_template="", theme_keywords=["appendix"], eyebrow="Appendix"),
+                topic_label,
+                pk,
+            ),
+            "assigned_source_ids": sorted({c.source_id for c in leftover if c.source_id}),
+            "needs_chart": False,
+            "needs_table": False,
+            "needs_diagram": False,
+            "needs_hero_stat": False,
+            "animation": "fade-in",
             "blocks": [
                 _eyebrow(number, 1, "Appendix"),
                 _heading(number, 2, title),
