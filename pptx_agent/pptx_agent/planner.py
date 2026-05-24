@@ -14,7 +14,7 @@ from .slide_author import (
     iter_analyst_authoring_events,
     iter_authoring_events,
 )
-from .themes import DEFAULT_THEME, get_theme
+from .themes import DEFAULT_THEME, choose_theme_name, resolve_theme_name
 from .utils import clamp, slugify
 
 
@@ -144,7 +144,8 @@ def iter_build_deck(
     yield make_event("phase_start", id=PHASE_OUTLINE, label="Plan outline")
     topic = extract_topic(prompt)
     llm = LLMClient(settings)
-    resolved_theme = get_theme(theme).name
+    requested_theme = resolve_theme_name(theme)
+    resolved_theme = requested_theme
     llm_ok = False
 
     # ---- Probe LLM up front. Bad keys / wrong model / wrong endpoint:
@@ -296,6 +297,9 @@ def iter_build_deck(
     deck_subtitle = scrub_paragraph(str(outline.get("subtitle") or _subtitle_for_topic(topic)))
     audience = str(outline.get("audience") or "Stakeholders")
     family = str(outline.get("family") or "report")
+    resolved_theme = choose_theme_name(prompt, topic, family, theme)
+    if deterministic_deck is not None:
+        deterministic_deck["theme"] = resolved_theme
 
     yield make_event(
         "deck_meta",
@@ -315,6 +319,14 @@ def iter_build_deck(
             subtitle=entry.get("subtitle", ""),
             eyebrow=entry.get("eyebrow", ""),
             layout=entry.get("layout") or entry.get("role") or "solution",
+            role=entry.get("role") or entry.get("layout") or "solution",
+            focus_keywords=entry.get("focus_keywords") or [],
+            assigned_source_ids=entry.get("assigned_source_ids") or [],
+            needs_chart=bool(entry.get("needs_chart")),
+            needs_table=bool(entry.get("needs_table")),
+            needs_diagram=bool(entry.get("needs_diagram")),
+            needs_hero_stat=bool(entry.get("needs_hero_stat")),
+            animation=entry.get("animation") or "",
         )
     yield make_event("phase_end", id=PHASE_OUTLINE)
 
@@ -564,7 +576,7 @@ def _empty_deck(
     theme: str | None,
 ) -> dict[str, Any]:
     topic = extract_topic(prompt)
-    resolved_theme = get_theme(theme).name
+    resolved_theme = choose_theme_name(prompt, topic, "report", theme)
     deterministic = _build_deterministic_deck(
         prompt=prompt,
         topic=topic,
@@ -620,12 +632,15 @@ def _outline_from_existing_deck(deck: dict[str, Any]) -> dict[str, Any]:
                 "eyebrow": str(slide.get("eyebrow") or ""),
                 "title": str(slide.get("title") or f"Slide {len(slides) + 1}"),
                 "subtitle": str(slide.get("subtitle") or ""),
-                "focus_keywords": [],
-                "assigned_source_ids": [str(s) for s in (slide.get("citations") or [])],
-                "needs_chart": False,
-                "needs_table": False,
-                "needs_diagram": False,
-                "needs_hero_stat": False,
+                "focus_keywords": [str(k) for k in (slide.get("focus_keywords") or [])][:6],
+                "assigned_source_ids": [
+                    str(s) for s in (slide.get("assigned_source_ids") or slide.get("citations") or [])
+                ],
+                "needs_chart": bool(slide.get("needs_chart")),
+                "needs_table": bool(slide.get("needs_table")),
+                "needs_diagram": bool(slide.get("needs_diagram")),
+                "needs_hero_stat": bool(slide.get("needs_hero_stat")),
+                "animation": str(slide.get("animation") or ""),
             }
         )
     return {
@@ -689,6 +704,46 @@ def slide_content_markdown(deck: dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def slide_plan_markdown(deck: dict[str, Any]) -> str:
+    lines = [f"# {deck['title']} Slide Plan", ""]
+    for slide in deck.get("slides") or []:
+        lines.append(f"## Slide {slide['number']}: {slide.get('title', '')}")
+        lines.append(f"- Layout: {slide.get('layout', '')}")
+        if slide.get("eyebrow"):
+            lines.append(f"- Eyebrow: {slide.get('eyebrow')}")
+        if slide.get("subtitle"):
+            lines.append(f"- Lede: {slide.get('subtitle')}")
+        keywords = ", ".join(str(k) for k in (slide.get("focus_keywords") or [])[:6])
+        if keywords:
+            lines.append(f"- Focus keywords: {keywords}")
+        source_ids = ", ".join(
+            str(s) for s in (slide.get("assigned_source_ids") or slide.get("citations") or [])[:4]
+        )
+        if source_ids:
+            lines.append(f"- Planned sources: {source_ids}")
+        visuals = [
+            label
+            for label, enabled in (
+                ("chart", bool(slide.get("needs_chart"))),
+                ("table", bool(slide.get("needs_table"))),
+                ("diagram", bool(slide.get("needs_diagram"))),
+                ("hero_stat", bool(slide.get("needs_hero_stat"))),
+            )
+            if enabled
+        ]
+        if visuals:
+            lines.append(f"- Planned visual: {', '.join(visuals)}")
+        block_types = [
+            str(block.get("type") or "")
+            for block in (slide.get("blocks") or [])
+            if block.get("type")
+        ]
+        if block_types:
+            lines.append(f"- Actual blocks: {' -> '.join(block_types)}")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
 def _title_for_topic(topic: str) -> str:
     words = topic.strip()
     if not words:
@@ -707,5 +762,6 @@ __all__ = [
     "iter_build_deck",
     "deck_structure_text",
     "slide_content_markdown",
+    "slide_plan_markdown",
     "DEFAULT_THEME",
 ]
