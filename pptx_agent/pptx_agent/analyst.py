@@ -42,7 +42,14 @@ from .html_renderer import render_single_slide_html
 from .intake import targeted_queries
 from .llm import LLMClient
 from .prompts import load as load_prompt
-from .slide_author import _extract_bullets, _extract_metrics, _extract_signals, _ground_blocks, _pick_sources
+from .slide_author import (
+    _extract_bullets,
+    _extract_metrics,
+    _extract_signals,
+    _ground_blocks,
+    _pick_sources,
+    _previous_slide_context,
+)
 from .visual_inspect import inspect_slide_html
 
 log = logging.getLogger("pptx_agent.analyst")
@@ -198,6 +205,7 @@ def _author_one(
                 "title": deck_meta.get("title", ""),
                 "audience": deck_meta.get("audience", ""),
                 "family": deck_meta.get("family", ""),
+                "previous_slides": _previous_slide_context(deck_meta),
             },
             "slide": {
                 "number": number,
