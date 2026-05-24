@@ -276,7 +276,18 @@ function TaskBody({ job, phaseId }: { job: JobState; phaseId: PhaseId }) {
             <span className="chip">{o.number}</span>
             <strong>{o.title}</strong>
             {o.eyebrow && <span className="muted small"> · {o.eyebrow}</span>}
+            <span className="muted small"> · {o.layout}</span>
             {o.subtitle && <p className="muted small">{o.subtitle}</p>}
+            {(o.focus_keywords && o.focus_keywords.length > 0) && (
+              <p className="muted small">Focus: {o.focus_keywords.join(", ")}</p>
+            )}
+            {(o.assigned_source_ids && o.assigned_source_ids.length > 0) && (
+              <p className="muted small">Sources: {o.assigned_source_ids.join(", ")}</p>
+            )}
+            {outlineVisualPlan(o).length > 0 && (
+              <p className="muted small">Plan: {outlineVisualPlan(o).join(" · ")}</p>
+            )}
+            {o.animation && <p className="muted small">Animation: {o.animation}</p>}
           </li>
         ))}
       </ol>
@@ -295,6 +306,24 @@ function TaskBody({ job, phaseId }: { job: JobState; phaseId: PhaseId }) {
               <span className="muted small"> · {s.layout}</span>
               {s.bullets.length > 0 && (
                 <span className="muted small"> · {s.bullets.length} bullets</span>
+              )}
+              {s.citations && s.citations.length > 0 && (
+                <p className="muted small">Citations: {s.citations.join(", ")}</p>
+              )}
+              {s.blocks && s.blocks.length > 0 && (
+                <p className="muted small">
+                  Blocks: {s.blocks.map((block) => block.type).join(" -> ")}
+                </p>
+              )}
+              {slideHtmlUrl(job, s.number) && (
+                <a
+                  className="muted-link"
+                  href={slideHtmlUrl(job, s.number) || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  open slide html
+                </a>
               )}
             </li>
           ))}
@@ -342,3 +371,16 @@ function TaskBody({ job, phaseId }: { job: JobState; phaseId: PhaseId }) {
   return null;
 }
 
+function outlineVisualPlan(outline: JobState["outline"][number]): string[] {
+  const items: string[] = [];
+  if (outline.needs_chart) items.push("chart");
+  if (outline.needs_table) items.push("table");
+  if (outline.needs_diagram) items.push("diagram");
+  if (outline.needs_hero_stat) items.push("hero stat");
+  return items;
+}
+
+function slideHtmlUrl(job: JobState, slideNumber: number): string | undefined {
+  const path = `slide-${slideNumber.toString().padStart(2, "0")}.html`;
+  return job.files.find((file) => file.path === path)?.url;
+}
