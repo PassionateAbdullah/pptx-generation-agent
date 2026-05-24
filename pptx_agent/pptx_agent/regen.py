@@ -161,7 +161,7 @@ def regenerate_slide(
         if themed
         else fill_title_template(role.title_template, topic_label, deck.get("prompt") or "")
     )
-    subtitle = build_subtitle(themed, topic_label, fallback=old_slide.get("subtitle") or "")
+    subtitle = build_subtitle(themed, role, topic_label, fallback=old_slide.get("subtitle") or "")
     fallbacks = fallback_bullets_for_role(role, topic_label, pk, count=max_claims)
     bullets = claims_to_bullets(
         themed,
