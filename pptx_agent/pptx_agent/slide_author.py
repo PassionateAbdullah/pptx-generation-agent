@@ -110,6 +110,7 @@ def author_slide(
                 "title": deck_meta.get("title", ""),
                 "audience": deck_meta.get("audience", ""),
                 "family": deck_meta.get("family", ""),
+                "previous_slides": _previous_slide_context(deck_meta),
             },
             "slide": {
                 "number": number,
@@ -543,6 +544,25 @@ def _extract_metrics(blocks: list[dict[str, Any]]) -> list[dict[str, str]]:
     return []
 
 
+def _previous_slide_context(deck_meta: dict[str, Any], max_n: int = 3) -> list[dict[str, Any]]:
+    previous = list(deck_meta.get("slides_so_far") or [])[-max_n:]
+    out: list[dict[str, Any]] = []
+    for slide in previous:
+        out.append(
+            {
+                "number": int(slide.get("number") or 0),
+                "layout": str(slide.get("layout") or ""),
+                "title": str(slide.get("title") or ""),
+                "block_types": [
+                    str(block.get("type") or "")
+                    for block in (slide.get("blocks") or [])
+                    if block.get("type")
+                ][:6],
+            }
+        )
+    return out
+
+
 _AUTHORING_SENTINEL = object()
 
 
@@ -652,7 +672,9 @@ def iter_analyst_authoring_events(
 
     for entry in outline_slides:
         try:
-            slide = analyst_pass(entry, research, deck_meta, llm, settings, on_event=collect)
+            runtime_meta = dict(deck_meta)
+            runtime_meta["slides_so_far"] = list(slides_out)
+            slide = analyst_pass(entry, research, runtime_meta, llm, settings, on_event=collect)
         except Exception as exc:  # noqa: BLE001
             log.warning("analyst_pass crashed on slide %s: %s", entry.get("number"), exc)
             slide = _scaffold_slide(entry)
